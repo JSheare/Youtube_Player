@@ -1,7 +1,7 @@
 import discord
 import os
 import asyncio
-from datetime import datetime, timezone
+import logging
 from dotenv import load_dotenv
 from yt_dlp import YoutubeDL
 
@@ -16,7 +16,6 @@ class Youtubebot(discord.Client):
         super().__init__(**kwargs)
         load_dotenv()  # Loads the .env file where the tokens are stored
         self.discord_token = os.getenv('DISCORD_TOKEN')
-        self.log = open('log.txt', 'w')
         self.queues = {}  # Keeps a queue of videos to be played for each guild
         self.recycling = {}  # Keeps a queue of audio files to be deleted for each guild
         self.message_cache = {}  # Keeps a record of the most recently sent player message for each guild
@@ -28,8 +27,6 @@ class Youtubebot(discord.Client):
     async def on_ready(self):
         print(f'{self.user} has connected to Discord')
         print(f'Severs: {", ".join([guild.name + f" (id: {guild.id})" for guild in self.guilds])}')
-        now = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(tz=None)
-        print(f'{now}: Bot initialization', file=self.log)
 
     # Bot message commands
     async def on_message(self, message):
@@ -132,11 +129,8 @@ class Youtubebot(discord.Client):
                 try:
                     info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
 
-                except Exception as e:
+                except Exception:
                     await message.channel.send('**Error getting video(s).**')
-                    now = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(tz=None)
-                    print(f'{now}: Failed to get video(s) from {url}. Error:', file=self.log)
-                    print(e, file=self.log)
                     await self.timeout(voice_client)
                     return
 
@@ -147,8 +141,6 @@ class Youtubebot(discord.Client):
                     self.recycling[guild_id] = asyncio.Queue()
                     queue = self.queues[guild_id]
 
-                now = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(tz=None)
-                print(f'{now}: Enqueueing video(s) from {url}', file=self.log)
                 if 'entries' in info:
                     await self.send_message(message, f'**Enqueueing {info["playlist_count"]} videos...**')
                     self.loop.create_task(self.enqueue([s['webpage_url'] for s in info['entries']], guild_id))
@@ -259,8 +251,6 @@ class Youtubebot(discord.Client):
                         '!queue - display the current contents of the queue\n'
                         '!clear - clear the queue\n'
                         '!leave - leave the current voice channel**')
-        now = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(tz=None)
-        print(f'{now}: Sending help message', file=self.log)
         await message.channel.send(help_message)
 
     async def custom_status_background(self):
@@ -274,5 +264,6 @@ class Youtubebot(discord.Client):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
+log_handler = logging.FileHandler(filename='log.txt', encoding='utf-8', mode='w')
 bot = Youtubebot(intents=intents)
-bot.run(bot.discord_token)
+bot.run(bot.discord_token, log_handler=log_handler, log_level=logging.DEBUG)
