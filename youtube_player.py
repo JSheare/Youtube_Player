@@ -46,6 +46,8 @@ class Youtubebot(discord.Client):
                 await self.skip(message)
             elif message.content == '!leave':
                 await self.leave(message)
+            elif message.content == '!queue':
+                await self.display_queue(message)
             elif message.content == '!clear':
                 await self.clear_queue(message)
             elif message.content == '!help':
@@ -209,13 +211,38 @@ class Youtubebot(discord.Client):
             else:
                 await message.channel.send('Nothing playing right now.')
 
+    # Displays the current queue
+    async def display_queue(self, message):
+        if await self.is_valid_command(message):
+            guild_id = message.guild.id
+            if guild_id in self.queues and not self.queues[guild_id].empty():
+                queue = self.queues[guild_id]
+                i = 0
+                queue_message = 'Currently in queue:\n'
+                original_size = queue.qsize()
+                while i < original_size:
+                    video_title = queue.get_nowait()
+                    if i < 10:
+                        queue_message += f'{video_title[:-5]}\n'
+                    elif i == 10:
+                        queue_message += f'+{queue.qsize()} more.'
+
+                    await queue.put(video_title)
+
+                    i += 1
+
+                await message.channel.send(queue_message)
+            else:
+                await message.channel.send('Queue currently empty.')
+
+    # Clears all videos currently in the queue
     async def clear_queue(self, message, supress_message=False):
         if await self.is_valid_command(message):
-            voice_client = message.guild.voice_client
             guild_id = message.guild.id
-            if voice_client and guild_id in self.queues and not self.queues[guild_id].empty():
+            if guild_id in self.queues and not self.queues[guild_id].empty():
                 if not supress_message:
                     await message.channel.send('Emptying queue...')
+
                 queue = self.queues[guild_id]
                 while not queue.empty():
                     file = queue.get_nowait()
@@ -231,6 +258,7 @@ class Youtubebot(discord.Client):
                         '!pause - pause playback\n'
                         '!resume - resume playback\n'
                         '!skip - skip the current video\n'
+                        '!queue - display the current contents of the queue\n'
                         '!clear - clear the queue\n'
                         '!leave - leave the current voice channel')
         now = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(tz=None)
