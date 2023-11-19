@@ -17,7 +17,7 @@ class Youtubebot(discord.Client):
         load_dotenv()  # Loads the .env file where the tokens are stored
         self.discord_token = os.getenv('DISCORD_TOKEN')
         self.log = open('log.txt', 'w')
-        self.queues = {}  # Keeps a queue of songs to be played for each guild
+        self.queues = {}  # Keeps a queue of videos to be played for each guild
         self.recycling = {}  # Keeps a queue of audio files to be deleted for each guild
         self.message_cache = {}  # Keeps a record of the most recently sent message for each guild
 
@@ -64,7 +64,7 @@ class Youtubebot(discord.Client):
         new_message = await message.channel.send(string)
         self.message_cache[guild_id] = new_message
 
-    # Check if user is connected to a voice channel and send a message if they aren't
+    # Checks if user is connected to a voice channel and send a message if they aren't
     async def is_valid_command(self, message):
         if message.author.voice:
             return True
@@ -224,7 +224,7 @@ class Youtubebot(discord.Client):
                     await queue.put(video_title)
                     i += 1
 
-                if i >= 10:
+                if i > 10:
                     queue_message += f'+{original_size - 10} more.**'
                 else:
                     queue_message += '**'
