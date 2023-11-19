@@ -19,7 +19,7 @@ class Youtubebot(discord.Client):
         self.log = open('log.txt', 'w')
         self.queues = {}  # Keeps a queue of videos to be played for each guild
         self.recycling = {}  # Keeps a queue of audio files to be deleted for each guild
-        self.message_cache = {}  # Keeps a record of the most recently sent message for each guild
+        self.message_cache = {}  # Keeps a record of the most recently sent player message for each guild
 
         self.ydl = YoutubeDL()
         self.ydl.add_default_info_extractors()
@@ -69,7 +69,7 @@ class Youtubebot(discord.Client):
         if message.author.voice:
             return True
         else:
-            await self.send_message(message, '**Connect to a voice channel to use commands.**')
+            await message.channel.send('**Connect to a voice channel to use commands.**')
             return False
 
     # Leaves the voice channel that the message sender is in
@@ -79,7 +79,7 @@ class Youtubebot(discord.Client):
             await self.clear_queue(message, True)
             await voice_client.disconnect()
         else:
-            await self.send_message(message, '**Not currently connected to a voice channel.**')
+            await message.channel.send('**Not currently connected to a voice channel.**')
 
     # Waits five minutes and then disconnects the bot from the current voice channel if it isn't playing anything
     async def timeout(self, voice_client):
@@ -133,7 +133,7 @@ class Youtubebot(discord.Client):
                     info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
 
                 except Exception as e:
-                    await self.send_message(message, '**Error getting video(s).**')
+                    await message.channel.send('**Error getting video(s).**')
                     now = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(tz=None)
                     print(f'{now}: Failed to get video(s) from {url}. Error:', file=self.log)
                     print(e, file=self.log)
@@ -175,37 +175,37 @@ class Youtubebot(discord.Client):
                                           self.check_queue(guild_id, message, voice_client, file), self.loop))
 
             else:
-                await self.send_message(message, '**Not a valid link.**')
+                await message.channel.send('**Not a valid link.**')
 
     # Pauses playback of the current video
     async def pause(self, message):
         if await self.is_valid_command(message):
             voice_client = message.guild.voice_client
             if voice_client and voice_client.is_playing():
-                await self.send_message(message, '**Pausing playback...**')
+                await message.channel.send('**Pausing playback...**')
                 voice_client.pause()
             else:
-                await self.send_message(message, '**Nothing playing right now.**')
+                await message.channel.send('**Nothing playing right now.**')
 
     # Resumes playback of the current video
     async def resume(self, message):
         if await self.is_valid_command(message):
             voice_client = message.guild.voice_client
             if voice_client and voice_client.is_paused():
-                await self.send_message(message, '**Resuming playback...**')
+                await message.channel.send('**Resuming playback...**')
                 voice_client.resume()
             else:
-                await self.send_message(message, '**Nothing playing right now.**')
+                await message.channel.send('**Nothing playing right now.**')
 
     # Skips playback of the current video
     async def skip(self, message):
         if await self.is_valid_command(message):
             voice_client = message.guild.voice_client
             if voice_client and (voice_client.is_playing() or voice_client.is_paused()):
-                await self.send_message(message, '**Skipping...**')
+                await message.channel.send('**Skipping...**')
                 voice_client.stop()
             else:
-                await self.send_message(message, '**Nothing playing right now.**')
+                await message.channel.send('**Nothing playing right now.**')
 
     # Displays the current queue
     async def display_queue(self, message):
@@ -229,9 +229,9 @@ class Youtubebot(discord.Client):
                 else:
                     queue_message += '**'
 
-                await self.send_message(message, queue_message)
+                await message.channel.send(queue_message)
             else:
-                await self.send_message(message, '**Queue currently empty.**')
+                await message.channel.send('**Queue currently empty.**')
 
     # Clears all videos currently in the queue
     async def clear_queue(self, message, supress_message=False):
@@ -239,7 +239,7 @@ class Youtubebot(discord.Client):
             guild_id = message.guild.id
             if guild_id in self.queues and not self.queues[guild_id].empty():
                 if not supress_message:
-                    await self.send_message(message, '**Emptying queue...**')
+                    await message.channel.send('**Emptying queue...**')
 
                 queue = self.queues[guild_id]
                 while not queue.empty():
@@ -247,7 +247,7 @@ class Youtubebot(discord.Client):
                     os.remove(file)
             else:
                 if not supress_message:
-                    await self.send_message(message, '**Queue already empty.**')
+                    await message.channel.send('**Queue already empty.**')
 
     # Sends a help message with all the bots commands
     async def help(self, message):
