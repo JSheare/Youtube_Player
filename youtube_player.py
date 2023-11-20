@@ -20,7 +20,7 @@ class Youtubebot(discord.Client):
         self.recycling = {}  # Keeps a queue of audio files to be deleted for each guild
         self.message_cache = {}  # Keeps a record of the most recently sent player message for each guild
 
-        self.ydl = YoutubeDL()
+        self.ydl = YoutubeDL({'quiet': True})
         self.ydl.add_default_info_extractors()
 
     # Discord client startup tasks
@@ -128,9 +128,11 @@ class Youtubebot(discord.Client):
                 await self.send_message(message, '**Collecting info...**')
                 try:
                     info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
-                except Exception:
+                except Exception as e:
                     await message.channel.send('**Error getting video(s).**')
                     await self.timeout(voice_client)
+                    logger = logging.getLogger('discord')
+                    logger.error(e)
                     return
 
                 if guild_id in self.queues:
