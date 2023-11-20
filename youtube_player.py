@@ -128,7 +128,6 @@ class Youtubebot(discord.Client):
                 await self.send_message(message, '**Collecting info...**')
                 try:
                     info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
-
                 except Exception:
                     await message.channel.send('**Error getting video(s).**')
                     await self.timeout(voice_client)
@@ -266,4 +265,4 @@ intents.message_content = True
 intents.voice_states = True
 log_handler = logging.FileHandler(filename='log.txt', encoding='utf-8', mode='w')
 bot = Youtubebot(intents=intents)
-bot.run(bot.discord_token, log_handler=log_handler, log_level=logging.DEBUG)
+bot.run(bot.discord_token, log_handler=log_handler, log_level=logging.INFO)
