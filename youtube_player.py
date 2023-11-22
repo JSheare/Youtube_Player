@@ -8,7 +8,8 @@ from yt_dlp import YoutubeDL
 
 def is_valid_url(url):
     return (len(url) >= 23 and url[:23] == 'https://www.youtube.com') or (
-        len(url) >= 16 and url[:16] == 'https://youtu.be')
+        len(url) >= 16 and url[:16] == 'https://youtu.be') or (
+            len(url) >= 19 and url[:19] == 'https://youtube.com')
 
 
 class Youtubebot(discord.Client):
