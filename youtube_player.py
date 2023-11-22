@@ -87,8 +87,6 @@ class Youtubebot(discord.Client):
 
     # Recursively plays more tracks from the queue. Note: this means that you can only enqueue ~1000 videos at a time
     async def check_queue(self, guild_id, message, voice_client, prev_file):
-        # These os removes will unfortunately lead to a situation where if the same video is queued twice
-        # It will error a little. Too lazy to fix this right now
         if self.queues[guild_id].empty():
             os.remove(prev_file)
             while not self.recycling[guild_id].empty():
