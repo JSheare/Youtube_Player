@@ -12,6 +12,30 @@ def is_valid_url(url):
             len(url) >= 19 and url[:19] == 'https://youtube.com')
 
 
+def is_valid_attachment(filename):
+    # Stuff to test: .mov, probably more in videos folder
+    valid_extensions = ['.mp3', '.mp4', '.wav']
+    i = len(filename) - 1
+    while i >= 0:
+        if filename[i] == '.':
+            break
+
+        i -= 1
+
+    return filename[i:] in valid_extensions
+
+
+def strip_extension(filename):
+    i = len(filename) - 1
+    while i >= 0:
+        if filename[i] == '.':
+            break
+
+        i -= 1
+
+    return filename[:i]
+
+
 class Youtubebot(discord.Client):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -98,7 +122,7 @@ class Youtubebot(discord.Client):
         else:
             await self.recycling[guild_id].put(prev_file)
             file = self.queues[guild_id].get_nowait()
-            await self.send_message(message, f'**Now playing *{file[:-5]}*...**')
+            await self.send_message(message, f'**Now playing *{strip_extension(file)}*...**')
             # voice_client.play(discord.FFmpegPCMAudio(file, executable='C:/ffmpeg/bin/ffmpeg.exe'),  # on win
             #                   after=lambda x:
             #                   asyncio.run_coroutine_threadsafe(
@@ -109,30 +133,28 @@ class Youtubebot(discord.Client):
                                   self.check_queue(guild_id, message, voice_client, file), self.loop))
 
     # Downloads/enqueues each of the videos in 'urls'
-    async def enqueue(self, urls, guild_id):
+    async def enqueue_video(self, urls, guild_id):
         queue = self.queues[guild_id]
         for url in urls:
             info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url))
             await queue.put(self.ydl.prepare_filename(info))
 
+    async def enqueue_attachment(self, attachments, guild_id):
+        queue = self.queues[guild_id]
+        for attachment in attachments:
+            if is_valid_attachment(attachment.filename):
+                await attachment.save(attachment.filename)
+                await queue.put(attachment.filename)
+
     # Plays the video corresponding to the given url
     async def play(self, message, url):
         if await self.is_valid_command(message):
-            if is_valid_url(url):
+            if is_valid_url(url) or message.attachments:
                 guild_id = message.guild.id
                 voice_client = message.guild.voice_client
+                playlist = False
                 if not voice_client:
                     voice_client = await message.author.voice.channel.connect()
-
-                await self.send_message(message, '**Collecting info...**')
-                try:
-                    info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
-                except Exception as e:
-                    await message.channel.send('**Error getting video(s).**')
-                    await self.timeout(voice_client)
-                    logger = logging.getLogger('discord')
-                    logger.error(e)
-                    return
 
                 if guild_id in self.queues:
                     queue = self.queues[guild_id]
@@ -141,22 +163,43 @@ class Youtubebot(discord.Client):
                     self.recycling[guild_id] = asyncio.Queue()
                     queue = self.queues[guild_id]
 
-                if 'entries' in info:
-                    await self.send_message(message, f'**Enqueueing {info["playlist_count"]} videos...**')
-                    self.loop.create_task(self.enqueue([s['webpage_url'] for s in info['entries']], guild_id))
+                # Enqueues attachments
+                if message.attachments:
+                    if len(message.attachments) > 1:
+                        playlist = True
+                        await self.send_message(message, f'**Enqueuing {len(message.attachments)} attachments...**')
+
+                    self.loop.create_task(self.enqueue_attachment(message.attachments, guild_id))
+
+                # Enqueues normal YouTube videos
                 else:
-                    self.loop.create_task(self.enqueue([info['webpage_url']], guild_id))
+                    await self.send_message(message, '**Collecting info...**')
+                    try:
+                        info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
+                    except Exception as e:
+                        await message.channel.send('**Error getting video(s).**')
+                        await self.timeout(voice_client)
+                        logger = logging.getLogger('discord')
+                        logger.error(e)
+                        return
+
+                    if 'entries' in info:
+                        playlist = True
+                        await self.send_message(message, f'**Enqueueing {info["playlist_count"]} videos...**')
+                        self.loop.create_task(self.enqueue_video([s['webpage_url'] for s in info['entries']], guild_id))
+                    else:
+                        self.loop.create_task(self.enqueue_video([info['webpage_url']], guild_id))
 
                 # Ends here if the player is already active
                 if voice_client.is_playing() or (guild_id in self.queues and not self.queues[guild_id].empty()):
-                    if 'entries' not in info:
-                        await self.send_message(message, '**Enqueueing new video...**')
+                    if not playlist:
+                        await self.send_message(message, '**Enqueueing new track...**')
 
                     return
                 # Otherwise just plays the videos
                 else:
                     file = await queue.get()
-                    await self.send_message(message, f'**Now playing *{file[:-5]}*...**')
+                    await self.send_message(message, f'**Now playing *{strip_extension(file)}*...**')
                     # voice_client.play(discord.FFmpegPCMAudio(file, executable='C:/ffmpeg/bin/ffmpeg.exe'),  # on win
                     #                   after=lambda x:
                     #                   asyncio.run_coroutine_threadsafe(
@@ -167,7 +210,7 @@ class Youtubebot(discord.Client):
                                           self.check_queue(guild_id, message, voice_client, file), self.loop))
 
             else:
-                await message.channel.send('**Not a valid link.**')
+                await message.channel.send('**Not a valid link/attachment.**')
 
     # Pauses playback of the current video
     async def pause(self, message):
