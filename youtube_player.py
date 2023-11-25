@@ -13,8 +13,7 @@ def is_valid_url(url):
 
 
 def is_valid_attachment(filename):
-    # Stuff to test: .mov, probably more in videos folder
-    valid_extensions = ['.mp3', '.mp4', '.wav']
+    valid_extensions = ['.mp3', '.mp4', '.wav', '.webm', '.mov']
     i = len(filename) - 1
     while i >= 0:
         if filename[i] == '.':
