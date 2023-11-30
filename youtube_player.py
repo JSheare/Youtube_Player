@@ -286,7 +286,8 @@ class Youtubebot(discord.Client):
     # Sends a help message with all the bots commands
     async def help(self, message):
         help_message = ('**!help - list all commands\n'
-                        '!play [url] - play specified video in the current voice channel\n'
+                        '!play [url] - play specified video(s) in the current voice channel\n'
+                        '!play (with attachment) - play attachment(s) in the current voice channel\n'
                         '!pause - pause playback\n'
                         '!resume - resume playback\n'
                         '!skip - skip the current video\n'
