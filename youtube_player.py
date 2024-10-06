@@ -103,7 +103,8 @@ class Youtubebot(discord.Client):
             await message.channel.send('**Not currently connected to a voice channel.**')
 
     # Waits five minutes and then disconnects the bot from the current voice channel if it isn't playing anything
-    async def timeout(self, voice_client):
+    @staticmethod
+    async def timeout(voice_client):
         await asyncio.sleep(300)
         if not voice_client.is_playing():
             await voice_client.disconnect()
@@ -122,10 +123,6 @@ class Youtubebot(discord.Client):
             await self.recycling[guild_id].put(prev_file)
             file = self.queues[guild_id].get_nowait()
             await self.send_message(message, f'**Now playing *{strip_extension(file)}*...**')
-            # voice_client.play(discord.FFmpegPCMAudio(file, executable='C:/ffmpeg/bin/ffmpeg.exe'),  # on win
-            #                   after=lambda x:
-            #                   asyncio.run_coroutine_threadsafe(
-            #                   self.check_queue(guild_id, message, voice_client, file), self.loop))
             voice_client.play(discord.FFmpegPCMAudio(file),
                               after=lambda x:
                               asyncio.run_coroutine_threadsafe(
@@ -182,6 +179,7 @@ class Youtubebot(discord.Client):
                         logger.error(e)
                         return
 
+                    # Enqueues a playlist
                     if 'entries' in info:
                         playlist = True
                         await self.send_message(message, f'**Enqueueing {info["playlist_count"]} videos...**')
@@ -199,10 +197,6 @@ class Youtubebot(discord.Client):
                 else:
                     file = await queue.get()
                     await self.send_message(message, f'**Now playing *{strip_extension(file)}*...**')
-                    # voice_client.play(discord.FFmpegPCMAudio(file, executable='C:/ffmpeg/bin/ffmpeg.exe'),  # on win
-                    #                   after=lambda x:
-                    #                   asyncio.run_coroutine_threadsafe(
-                    #                   self.check_queue(guild_id, message, voice_client, file), self.loop))
                     voice_client.play(discord.FFmpegPCMAudio(file),
                                       after=lambda x:
                                       asyncio.run_coroutine_threadsafe(
@@ -284,7 +278,8 @@ class Youtubebot(discord.Client):
                     await message.channel.send('**Queue already empty.**')
 
     # Sends a help message with all the bots commands
-    async def help(self, message):
+    @staticmethod
+    async def help(message):
         help_message = ('**!help - list all commands\n'
                         '!play [url] - play specified video(s) in the current voice channel\n'
                         '!play (with attachment) - play attachment(s) in the current voice channel\n'
@@ -306,9 +301,14 @@ class Youtubebot(discord.Client):
         self.loop.create_task(self.custom_status_background())
 
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.voice_states = True
-log_handler = logging.FileHandler(filename='log.txt', encoding='utf-8', mode='w')
-bot = Youtubebot(intents=intents)
-bot.run(bot.discord_token, log_handler=log_handler, log_level=logging.INFO)
+def main():
+    intents = discord.Intents.default()
+    intents.message_content = True
+    intents.voice_states = True
+    log_handler = logging.FileHandler(filename='log.txt', encoding='utf-8', mode='w')
+    bot = Youtubebot(intents=intents)
+    bot.run(bot.discord_token, log_handler=log_handler, log_level=logging.INFO)
+
+
+if __name__ == '__main__':
+    main()
