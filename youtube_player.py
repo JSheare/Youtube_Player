@@ -47,6 +47,7 @@ class Player:
         self.queue = asyncio.Queue()
         self.recycling = asyncio.Queue()
         self.next = asyncio.Event()
+        self.enqueueing = asyncio.Lock()
 
     # Deletes the old player status message before sending the new one
     async def replace_status_message(self, user_message, string):
@@ -159,15 +160,21 @@ class Player:
 
     # Downloads/enqueues each of the videos in 'urls'
     async def enqueue_videos(self, urls):
+        await self.enqueueing.acquire()  # Waiting for earlier enqueueing operations to finish
         for url in urls:
             info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url))
             await self.queue.put(self.ydl.prepare_filename(info))
 
+        self.loop.call_soon_threadsafe(self.enqueueing.release)
+
     # Enqueues attachments
     async def enqueue_attachments(self, attachments):
+        await self.enqueueing.acquire()  # Waiting for earlier enqueueing operations to finish
         for attachment in attachments:
             await attachment.save(attachment.filename)
             await self.queue.put(attachment.filename)
+
+        self.loop.call_soon_threadsafe(self.enqueueing.release)
 
     # Loops through the queue and plays everything inside
     async def player_loop(self, user_message):
