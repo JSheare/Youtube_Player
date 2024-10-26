@@ -52,7 +52,10 @@ class Player:
     # Deletes the old player status message before sending the new one
     async def replace_status_message(self, user_message, string):
         if self.status_message is not None:
-            await self.status_message.delete()
+            try:
+                await self.status_message.delete()
+            except discord.errors.NotFound:
+                pass
 
         self.status_message = await user_message.channel.send(string)
 
