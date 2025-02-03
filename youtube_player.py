@@ -165,8 +165,14 @@ class Player:
     async def enqueue_videos(self, urls):
         await self.enqueueing.acquire()  # Waiting for earlier enqueueing operations to finish
         for url in urls:
-            info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url))
-            await self.queue.put(self.ydl.prepare_filename(info))
+            try:
+                info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url))
+            except Exception as e:
+                info = None
+                logging.getLogger('discord').error(e)
+
+            if info is not None:
+                await self.queue.put(self.ydl.prepare_filename(info))
 
         self.loop.call_soon_threadsafe(self.enqueueing.release)
 
@@ -233,10 +239,13 @@ class Player:
 
                     # Enqueues a playlist
                     if 'entries' in info:
-                        playlist = True
-                        await self.replace_status_message(
-                            user_message, f'**Enqueueing {info["playlist_count"]} videos...**')
-                        self.loop.create_task(self.enqueue_videos([s['webpage_url'] for s in info['entries']]))
+                        if 'playlist' in url:
+                            playlist = True
+                            await self.replace_status_message(
+                                user_message, f'**Enqueueing {info["playlist_count"]} videos...**')
+                            self.loop.create_task(self.enqueue_videos([s['url'] for s in info['entries']]))
+                        else:
+                            self.loop.create_task(self.enqueue_videos([url.split('&')[0]]))
                     else:
                         self.loop.create_task(self.enqueue_videos([info['webpage_url']]))
 
@@ -273,7 +282,7 @@ class YoutubeBot(discord.Client):
         load_dotenv()  # Loads the .env file where the tokens are stored
         self.discord_token = os.getenv('DISCORD_TOKEN')
         self.players = {}  # Dictionary of players for each discord guild
-        self.ydl = YoutubeDL({'quiet': True})
+        self.ydl = YoutubeDL({'quiet': True, 'extract_flat': 'in_playlist'})
         self.ydl.add_default_info_extractors()
 
     # Discord client startup tasks
