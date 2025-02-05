@@ -134,12 +134,12 @@ class TrackQueue:
         self.loop = loop
         self.ydl = ydl
         self.recycler = recycler
+        self._clearing_queue = asyncio.Event()
 
         # Stuff related to the download work queue
         self._work_queue = asyncio.Queue()
         self._work_available = asyncio.Condition()
         self._work_lock = asyncio.Lock()
-        self._stop_processing = asyncio.Event()
 
         # Stuff related to the track queue itself
         self._track_queue = deque()
@@ -159,11 +159,15 @@ class TrackQueue:
 
     # Puts the track with the given handle on the track queue
     async def _put_track(self, track_handle):
-        async with self._track_lock:
-            self._track_queue.append(track_handle)
+        if not self._clearing_queue.is_set():
+            async with self._track_lock:
+                self._track_queue.append(track_handle)
+                async with self._track_available:
+                    self._track_available.notify()
 
-        async with self._track_available:
-            self._track_available.notify()
+        # Discards the track if we're clearing the queue
+        else:
+            await self.recycler.decrement(track_handle)
 
     async def _process_work(self):
         while True:
@@ -172,18 +176,21 @@ class TrackQueue:
                 async with self._work_available:
                     await self._work_available.wait()
 
-            # Stopping the task if instructed to do so by another task
-            if self._stop_processing.is_set():
+            if self._clearing_queue.is_set():
                 break
 
-            # Executing the work and notifying anyone who's waiting that the track queue has a new track
+            # Executing the work and pushing the downloaded tracks to the queue
             tracks = await self._work_queue.get()
             for track in tracks:
+                if self._clearing_queue.is_set():
+                    break
+
                 track_handle = await self.recycler.get_track_handle(track)
                 if track_handle != '':
                     await self._put_track(track_handle)
-                    async with self._track_available:
-                        self._track_available.notify()
+
+            if self._clearing_queue.is_set():
+                break
 
     # Blocks until the track queue contains a track
     async def wait(self):
@@ -238,17 +245,16 @@ class TrackQueue:
 
     # Clears the queue, including any currently-enqueued work
     async def clear(self):
-        await self._work_lock.acquire()
-        await self._track_lock.acquire()
-        try:
-            if len(self._track_queue) != 0 or not self._work_queue.empty():
-                # Waking up the work processing task if necessary and telling it to stop
-                self._stop_processing.set()
+        if not self._clearing_queue.is_set():
+            self._clearing_queue.set()
+            await self._work_lock.acquire()
+            await self._track_lock.acquire()
+            try:
+                # Waking up the work processing task if necessary
                 async with self._work_available:
                     self._work_available.notify()
 
                 await self._download_task  # Unblocks when the work processing task has finished executing
-                self._download_task = None
                 # Emptying the queues
                 while len(self._track_queue) > 0:
                     track_handle = self._track_queue.popleft()
@@ -257,13 +263,11 @@ class TrackQueue:
                 while not self._work_queue.empty():
                     self._work_queue.get_nowait()
 
-        finally:
-            self._stop_processing.clear()
-            if self._download_task is None:
+            finally:
+                self._clearing_queue.clear()
                 self._download_task = self.loop.create_task(self._process_work())
-
-            self._track_lock.release()
-            self._work_lock.release()
+                self._track_lock.release()
+                self._work_lock.release()
 
 
 # A class that manages player activities for each discord guild
@@ -273,18 +277,20 @@ class Player:
         self.ydl = ydl
         self.guild_id = guild_id
         self.status_message = None
+        self._message_lock = asyncio.Lock()
         self.voice_client = None
         self.queue = TrackQueue(loop, ydl, recycler)
 
     # Deletes the old player status message before sending the new one
     async def _replace_status_message(self, user_message, string):
-        if self.status_message is not None:
-            try:
-                await self.status_message.delete()
-            except discord.errors.NotFound:
-                pass
+        async with self._message_lock:
+            if self.status_message is not None:
+                try:
+                    await self.status_message.delete()
+                except discord.errors.NotFound:
+                    pass
 
-        self.status_message = await user_message.channel.send(string)
+            self.status_message = await user_message.channel.send(string)
 
     # Checks to see if the message sender is in a voice channel, and optionally sends a warning if they aren't
     @staticmethod
@@ -374,13 +380,17 @@ class Player:
             try:
                 async with (timeout(300)):
                     await self.queue.wait()
-                    track_handle = await self.queue.front()
-                    await self._replace_status_message(user_message,
-                                                       f'**Now playing *{strip_extension(track_handle)}*...**')
-                    await self.queue.play(self.voice_client)
 
             except asyncio.TimeoutError:
                 break
+
+            try:
+                # Play the track
+                await self.queue.wait()
+                track_handle = await self.queue.front()
+                await self._replace_status_message(user_message,
+                                                   f'**Now playing *{strip_extension(track_handle)}*...**')
+                await self.queue.play(self.voice_client)
             except Exception as ex:
                 logging.getLogger('discord').error(ex)
 
