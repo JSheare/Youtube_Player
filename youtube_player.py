@@ -3,6 +3,7 @@ import discord
 import logging
 import os
 from async_timeout import timeout
+from collections import deque
 from discord.ext import tasks
 from dotenv import load_dotenv
 from yt_dlp import YoutubeDL
@@ -54,42 +55,80 @@ def strip_extension(filename):
     return filename[:i]
 
 
-# A class that manages downloaded files
-class Recycler:
-    def __init__(self, loop):
+# A class that downloads and manages tracks for the bot
+class TrackRecycler:
+    def __init__(self, loop, ydl):
         self.loop = loop
-        self.files = {}  # A map of files with reference counts
-        self.lock = asyncio.Lock()
+        self.ydl = ydl
+        self._tracks = {}  # Maps track names to handles
+        self._handles = {}  # Maps handles to track names
+        self._references = {}  # Maps handles to references
+        self._lock = asyncio.Lock()
 
-    # Increment the reference count for a file
-    async def increment(self, file):
-        async with self.lock:
-            if file in self.files:
-                self.files[file] += 1
-            else:
-                self.files[file] = 1
+    # Returns the track handle for the specified track and increments the track's counter
+    async def get_track_handle(self, track):
+        # For Discord message attachment
+        if isinstance(track, discord.Attachment):
+            track_name = track.filename
+            async with self._lock:
+                # If the attachment is in the recycler already
+                if track_name in self._tracks:
+                    self._references[self._tracks[track_name]] += 1
+                    return self._tracks[track_name]
 
-    # Decrement the reference count for a file
-    async def decrement(self, file):
-        async with self.lock:
-            if file in self.files:
-                self.files[file] -= 1
+            track_handle = track.filename
+            try:
+                await track.save(track_handle)
+            except Exception as ex:
+                logging.getLogger('discord').error(ex)
+                return ''
 
-    # Cleanup files with no references
-    @tasks.loop(seconds=1)
+        # For Youtube video url
+        else:
+            track_name = track
+            async with self._lock:
+                # If the video is in the recycler already
+                if track_name in self._tracks:
+                    self._references[self._tracks[track_name]] += 1
+                    return self._tracks[track_name]
+
+            try:
+                info = self.ydl.extract_info(track_name)
+                track_handle = self.ydl.prepare_filename(info)
+            except Exception as ex:
+                logging.getLogger('discord').error(ex)
+                return ''
+
+        async with self._lock:
+            self._tracks[track_name] = track_handle
+            self._handles[track_handle] = track_name
+            self._references[track_handle] = 1
+            return track_handle
+
+    # Decrements the reference count for the track with the given handle
+    async def decrement(self, track_handle):
+        async with self._lock:
+            if track_handle in self._handles:
+                self._references[track_handle] -= 1
+
+    # Cleanup tracks with no references
+    @tasks.loop(seconds=5)
     async def cleanup(self):
-        async with self.lock:
-            dead_files = []
-            for file in self.files:
-                if self.files[file] == 0:
-                    dead_files.append(file)
+        async with self._lock:
+            dead_tracks = []
+            for track_handle in self._references:
+                if self._references[track_handle] == 0:
+                    dead_tracks.append(track_handle)
 
-            for file in dead_files:
-                del self.files[file]
-                os.remove(file)
+            for track_handle in dead_tracks:
+                track_name = self._handles[track_handle]
+                del self._tracks[track_name]
+                del self._handles[track_handle]
+                del self._references[track_handle]
+                os.remove(track_handle)
 
 
-# A class that manages the queued tracks, including enqueueing and cleanup
+# A class that manages the queued tracks, including enqueueing and playing
 class TrackQueue:
     def __init__(self, loop, ydl, recycler):
         self.loop = loop
@@ -97,56 +136,35 @@ class TrackQueue:
         self.recycler = recycler
 
         # Stuff related to the download work queue
-        self._work_types = {'attachments': self._put_attachments, 'videos': self._put_videos}
         self._work_queue = asyncio.Queue()
         self._work_available = asyncio.Condition()
+        self._work_lock = asyncio.Lock()
         self._stop_processing = asyncio.Event()
-        self._processing_stopped = asyncio.Event()
 
         # Stuff related to the track queue itself
-        self._track_queue = asyncio.Queue()
-        self._prev_track = None
+        self._track_queue = deque()
         self._track_available = asyncio.Condition()
+        self._track_lock = asyncio.Lock()
+        self._track_finished = asyncio.Event()
 
         # Starting up the work processing task
-        self.loop.create_task(self._process_work())
+        self._download_task = self.loop.create_task(self._process_work())
 
-    # Enqueues the given attachments for download and track queueing
-    async def enqueue_attachments(self, attachments):
-        if not self._stop_processing.is_set():
-            await self._work_queue.put(('attachments', attachments))
+    # Enqueues the tracks in the given list
+    async def enqueue(self, tracks):
+        async with self._work_lock:
+            await self._work_queue.put(tracks)
             async with self._work_available:
                 self._work_available.notify()
 
-    # Enqueues the videos given in urls for download and track queueing
-    async def enqueue_videos(self, urls):
-        if not self._stop_processing.is_set():
-            await self._work_queue.put(('videos', urls))
-            async with self._work_available:
-                self._work_available.notify()
+    # Puts the track with the given handle on the track queue
+    async def _put_track(self, track_handle):
+        async with self._track_lock:
+            self._track_queue.append(track_handle)
 
-    # Downloads the given attachments and puts them onto the track queue
-    async def _put_attachments(self, attachments):
-        for attachment in attachments:
-            await attachment.save(attachment.filename)
-            await self.recycler.increment(attachment.filename)
-            await self._track_queue.put(attachment.filename)
+        async with self._track_available:
+            self._track_available.notify()
 
-    # Downloads the videos given in urls and puts them onto the track queue
-    async def _put_videos(self, urls):
-        for url in urls:
-            try:
-                info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url))
-            except Exception as e:
-                info = None
-                logging.getLogger('discord').error(e)
-
-            if info is not None:
-                file = self.ydl.prepare_filename(info)
-                await self.recycler.increment(file)
-                await self._track_queue.put(file)
-
-    # Executes the work in the work queue
     async def _process_work(self):
         while True:
             if self._work_queue.empty():
@@ -156,80 +174,96 @@ class TrackQueue:
 
             # Stopping the task if instructed to do so by another task
             if self._stop_processing.is_set():
-                self._processing_stopped.set()
                 break
 
             # Executing the work and notifying anyone who's waiting that the track queue has a new track
-            job = await self._work_queue.get()
-            await self._work_types[job[0]](job[1])
-            async with self._track_available:
-                self._track_available.notify()
+            tracks = await self._work_queue.get()
+            for track in tracks:
+                track_handle = await self.recycler.get_track_handle(track)
+                if track_handle != '':
+                    await self._put_track(track_handle)
+                    async with self._track_available:
+                        self._track_available.notify()
 
     # Blocks until the track queue contains a track
     async def wait(self):
-        if self._track_queue.empty():
+        if len(self._track_queue) == 0:
             async with self._track_available:
                 await self._track_available.wait()
 
         return True
 
-    # Gets and returns a track from the queue. Also recycles the previous one if it hasn't been recycled already
-    async def get(self):
-        await self.track_finished()
-        track = await self._track_queue.get()
-        self._prev_track = track
-        return track
+    # Returns the handle of the track at the front of the queue without popping it
+    async def front(self):
+        async with self._track_lock:
+            return self._track_queue[0]
 
-    # Signals the queue to recycle the track most recently returned by get()
-    async def track_finished(self):
-        if self._prev_track is not None:
-            await self.recycler.decrement(self._prev_track)
-            self._prev_track = None
+    # Plays the track that's currently at the front of the queue in the given voice channel
+    async def play(self, voice_client):
+        async with self._track_lock:
+            if len(self._track_queue) == 0:
+                return
+            else:
+                track_handle = self._track_queue.popleft()
+
+        voice_client.play(discord.FFmpegPCMAudio(track_handle),
+                          after=lambda _: self.loop.call_soon_threadsafe(self._track_finished.set))
+        await self._track_finished.wait()
+        self._track_finished.clear()
+        await self.recycler.decrement(track_handle)
 
     # Returns the list of tracks currently in the queue, optionally up to a specified maximum length
-    def get_tracklist(self, max_tracks=-1):
+    async def get_tracklist(self, max_tracks=-1):
         tracks = []
         if max_tracks == -1:
             max_tracks = float('inf')
 
-        for i in range(0, self._track_queue.qsize()):
-            track = self._track_queue.get_nowait()
-            if i < max_tracks:
-                tracks.append(track)
+        async with self._track_lock:
+            for i in range(len(self._track_queue)):
+                track_handle = self._track_queue.popleft()
+                if i < max_tracks:
+                    tracks.append(track_handle)
 
-            self._track_queue.put_nowait(track)
+                self._track_queue.append(track_handle)
 
         return tracks
 
     # Returns True if the track queue is empty
     def empty(self):
-        return self._track_queue.empty()
+        return len(self._track_queue) == 0
 
     # Returns the current size of the track queue
-    def qsize(self):
-        return self._track_queue.qsize()
+    def size(self):
+        return len(self._track_queue)
 
     # Clears the queue, including any currently-enqueued work
     async def clear(self):
-        if (not self._track_queue.empty() or not self._work_queue.empty()) and not self._stop_processing.is_set():
-            # Waking up the work processing task if necessary and telling it to stop
-            self._stop_processing.set()
-            async with self._work_available:
-                self._work_available.notify()
+        await self._work_lock.acquire()
+        await self._track_lock.acquire()
+        try:
+            if len(self._track_queue) != 0 or not self._work_queue.empty():
+                # Waking up the work processing task if necessary and telling it to stop
+                self._stop_processing.set()
+                async with self._work_available:
+                    self._work_available.notify()
 
-            await self._processing_stopped.wait()  # Unblocks when the work processing task has stopped
-            # Emptying the queues
-            while not self._work_queue.empty():
-                self._work_queue.get_nowait()
+                await self._download_task  # Unblocks when the work processing task has finished executing
+                self._download_task = None
+                # Emptying the queues
+                while len(self._track_queue) > 0:
+                    track_handle = self._track_queue.popleft()
+                    await self.recycler.decrement(track_handle)
 
-            while not self._track_queue.empty():
-                track = self._track_queue.get_nowait()
-                await self.recycler.decrement(track)
+                while not self._work_queue.empty():
+                    self._work_queue.get_nowait()
 
-            # Clearing all the signaling events and restarting the work processing task
+        finally:
             self._stop_processing.clear()
-            self._processing_stopped.clear()
-            self.loop.create_task(self._process_work())
+            if self._download_task is None:
+                self._download_task = self.loop.create_task(self._process_work())
+
+            self._track_lock.release()
+            self._work_lock.release()
 
 
 # A class that manages player activities for each discord guild
@@ -241,7 +275,6 @@ class Player:
         self.status_message = None
         self.voice_client = None
         self.queue = TrackQueue(loop, ydl, recycler)
-        self.next = asyncio.Event()
 
     # Deletes the old player status message before sending the new one
     async def _replace_status_message(self, user_message, string):
@@ -278,8 +311,8 @@ class Player:
         if await self._sender_in_voice(user_message, send_warning=True):
             if not self.queue.empty():
                 max_tracks_displayed = 10
-                original_size = self.queue.qsize()
-                tracks = self.queue.get_tracklist(max_tracks=max_tracks_displayed)
+                tracks = await self.queue.get_tracklist(max_tracks=max_tracks_displayed)
+                original_size = self.queue.size()
                 queue_message = '**__Currently in queue:__\n'
                 for track in tracks:
                     queue_message += f'*{strip_extension(track)}*\n'
@@ -337,28 +370,26 @@ class Player:
         await self.queue.wait()
         self.voice_client = await user_message.author.voice.channel.connect()
         while True:
-            self.next.clear()
-            # Wait for the next track. If we don't get anything new within 5 minutes, disconnect from voice and cleanup
+            # Wait for the next track. If we don't get anything new within 5 minutes, disconnect from voice
             try:
-                async with timeout(300):
-                    track = await self.queue.get()
+                async with (timeout(300)):
+                    await self.queue.wait()
+                    track_handle = await self.queue.front()
+                    await self._replace_status_message(user_message,
+                                                       f'**Now playing *{strip_extension(track_handle)}*...**')
+                    await self.queue.play(self.voice_client)
 
             except asyncio.TimeoutError:
                 break
-
-            # Plays the file in voice
-            await self._replace_status_message(user_message, f'**Now playing *{strip_extension(track)}*...**')
-            self.voice_client.play(discord.FFmpegPCMAudio(track),
-                                   after=lambda _: self.loop.call_soon_threadsafe(self.next.set))
-            await self.next.wait()  # Waiting for ffmpeg to finish
-            await self.queue.track_finished()
+            except Exception as ex:
+                logging.getLogger('discord').error(ex)
 
         # Leaves voice
         if self.voice_client is not None:
             await self.voice_client.disconnect()
             self.voice_client = None
 
-    # Plays video/attachment given in the message
+    # Enqueues and plays video/attachment given in the message
     async def play(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
             url = user_message.content[6:] if len(user_message.content) > 6 else ''
@@ -377,7 +408,7 @@ class Player:
                         await self._replace_status_message(
                             user_message, f'**Enqueuing {len(user_message.attachments)} attachments...**')
 
-                    await self.queue.enqueue_attachments(user_message.attachments)
+                    await self.queue.enqueue(user_message.attachments)
                 # Enqueues normal youtube videos
                 else:
                     await self._replace_status_message(user_message, '**Collecting info...**')
@@ -394,11 +425,11 @@ class Player:
                             playlist = True
                             await self._replace_status_message(
                                 user_message, f'**Enqueueing {info["playlist_count"]} videos...**')
-                            await self.queue.enqueue_videos([s['url'] for s in info['entries']])
+                            await self.queue.enqueue([s['url'] for s in info['entries']])
                         else:
-                            await self.queue.enqueue_videos([url.split('&')[0]])
+                            await self.queue.enqueue([url.split('&')[0]])
                     else:
-                        await self.queue.enqueue_videos([info['webpage_url']])
+                        await self.queue.enqueue([info['webpage_url']])
 
                 # Ends here if the player is already active
                 if self.voice_client is not None:
@@ -433,9 +464,9 @@ class YoutubeBot(discord.Client):
         load_dotenv()  # Loads the .env file where the tokens are stored
         self.discord_token = os.getenv('DISCORD_TOKEN')
         self.players = {}  # Dictionary of players for each discord guild
-        self.recycler = Recycler(self.loop)
         self.ydl = YoutubeDL({'quiet': True, 'extract_flat': 'in_playlist'})
         self.ydl.add_default_info_extractors()
+        self.recycler = TrackRecycler(self.loop, self.ydl)
 
     # Discord client startup tasks
     async def on_ready(self):
