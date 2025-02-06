@@ -93,8 +93,7 @@ class TrackRecycler:
                     return self._tracks[track_name]
 
             try:
-                info = self.ydl.extract_info(track_name)
-                track_handle = self.ydl.prepare_filename(info)
+                track_handle = self.ydl.prepare_filename(self.ydl.extract_info(track_name))
             except Exception as ex:
                 logging.getLogger('discord').error(ex)
                 return ''
@@ -136,26 +135,26 @@ class TrackQueue:
         self.recycler = recycler
         self._clearing_queue = asyncio.Event()
 
-        # Stuff related to the download work queue
-        self._work_queue = asyncio.Queue()
-        self._work_available = asyncio.Condition()
-        self._work_lock = asyncio.Lock()
+        self._enqueue_lock = asyncio.Lock()
 
-        # Stuff related to the track queue itself
         self._track_queue = deque()
         self._track_available = asyncio.Condition()
         self._track_lock = asyncio.Lock()
         self._track_finished = asyncio.Event()
 
-        # Starting up the work processing task
-        self._download_task = self.loop.create_task(self._process_work())
-
     # Enqueues the tracks in the given list
-    async def enqueue(self, tracks):
-        async with self._work_lock:
-            await self._work_queue.put(tracks)
-            async with self._work_available:
-                self._work_available.notify()
+    async def enqueue(self, track_list):
+        async with self._enqueue_lock:
+            if self._clearing_queue.is_set():
+                return
+
+            for track in track_list:
+                if self._clearing_queue.is_set():
+                    break
+
+                track_handle = await self.loop.create_task(self.recycler.get_track_handle(track))
+                if track_handle != '':
+                    await self._put_track(track_handle)
 
     # Puts the track with the given handle on the track queue
     async def _put_track(self, track_handle):
@@ -168,29 +167,6 @@ class TrackQueue:
         # Discards the track if we're clearing the queue
         else:
             await self.recycler.decrement(track_handle)
-
-    async def _process_work(self):
-        while True:
-            if self._work_queue.empty():
-                # Sleeping until there's work to do
-                async with self._work_available:
-                    await self._work_available.wait()
-
-            if self._clearing_queue.is_set():
-                break
-
-            # Executing the work and pushing the downloaded tracks to the queue
-            tracks = await self._work_queue.get()
-            for track in tracks:
-                if self._clearing_queue.is_set():
-                    break
-
-                track_handle = await self.recycler.get_track_handle(track)
-                if track_handle != '':
-                    await self._put_track(track_handle)
-
-            if self._clearing_queue.is_set():
-                break
 
     # Blocks until the track queue contains a track
     async def wait(self):
@@ -243,31 +219,21 @@ class TrackQueue:
     def size(self):
         return len(self._track_queue)
 
-    # Clears the queue, including any currently-enqueued work
+    # Clears the queue, including any currently-enqueued downloads
     async def clear(self):
         if not self._clearing_queue.is_set():
             self._clearing_queue.set()
-            await self._work_lock.acquire()
+            await self._enqueue_lock.acquire()
             await self._track_lock.acquire()
             try:
-                # Waking up the work processing task if necessary
-                async with self._work_available:
-                    self._work_available.notify()
-
-                await self._download_task  # Unblocks when the work processing task has finished executing
-                # Emptying the queues
                 while len(self._track_queue) > 0:
                     track_handle = self._track_queue.popleft()
                     await self.recycler.decrement(track_handle)
 
-                while not self._work_queue.empty():
-                    self._work_queue.get_nowait()
-
             finally:
                 self._clearing_queue.clear()
-                self._download_task = self.loop.create_task(self._process_work())
                 self._track_lock.release()
-                self._work_lock.release()
+                self._enqueue_lock.release()
 
 
 # A class that manages player activities for each discord guild
@@ -373,7 +339,6 @@ class Player:
 
     # Loops through the queue and plays everything inside
     async def _player_loop(self, user_message):
-        await self.queue.wait()
         self.voice_client = await user_message.author.voice.channel.connect()
         while True:
             # Wait for the next track. If we don't get anything new within 5 minutes, disconnect from voice
@@ -399,7 +364,7 @@ class Player:
             await self.voice_client.disconnect()
             self.voice_client = None
 
-    # Enqueues and plays video/attachment given in the message
+    # Enqueues and plays videos/attachments given in the message
     async def play(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
             url = user_message.content[6:] if len(user_message.content) > 6 else ''
@@ -418,7 +383,7 @@ class Player:
                         await self._replace_status_message(
                             user_message, f'**Enqueuing {len(user_message.attachments)} attachments...**')
 
-                    await self.queue.enqueue(user_message.attachments)
+                    track_list = user_message.attachments
                 # Enqueues normal youtube videos
                 else:
                     await self._replace_status_message(user_message, '**Collecting info...**')
@@ -435,19 +400,21 @@ class Player:
                             playlist = True
                             await self._replace_status_message(
                                 user_message, f'**Enqueueing {info["playlist_count"]} videos...**')
-                            await self.queue.enqueue([s['url'] for s in info['entries']])
+                            track_list = [s['url'] for s in info['entries']]
                         else:
                             await self.queue.enqueue([url.split('&')[0]])
+                            track_list = [url.split('&')[0]]
                     else:
-                        await self.queue.enqueue([info['webpage_url']])
+                        track_list = [info['webpage_url']]
 
-                # Ends here if the player is already active
                 if self.voice_client is not None:
                     if not playlist:
                         await self._replace_status_message(user_message, '**Enqueueing new track...**')
 
-                # Otherwise starts running through the queue
-                else:
+                await self.queue.enqueue(track_list)
+
+                # Starts the player if it hasn't been already
+                if self.voice_client is None:
                     await self._player_loop(user_message)
 
             else:
