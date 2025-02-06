@@ -490,7 +490,8 @@ class YoutubeBot(discord.Client):
     @tasks.loop(minutes=60)
     async def custom_status_background(self):
         await self.wait_until_ready()
-        await self.change_presence(activity=discord.Game('Type !help for commands.'))
+        await self.change_presence(
+            activity=discord.Activity(name='!help for commands.', type=discord.ActivityType.listening))
 
     async def setup_hook(self):
         self.custom_status_background.start()
