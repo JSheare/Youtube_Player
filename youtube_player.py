@@ -57,9 +57,8 @@ def strip_extension(filename):
 
 # A class that downloads and manages tracks for the bot
 class TrackRecycler:
-    def __init__(self, loop, ydl):
-        self.loop = loop
-        self.ydl = ydl
+    def __init__(self, ydl):
+        self._ydl = ydl
         self._tracks = {}  # Maps track names to handles
         self._handles = {}  # Maps handles to track names
         self._references = {}  # Maps handles to references
@@ -93,7 +92,9 @@ class TrackRecycler:
                     return self._tracks[track_name]
 
             try:
-                track_handle = self.ydl.prepare_filename(self.ydl.extract_info(track_name))
+                loop = asyncio.get_event_loop()
+                track_handle = await loop.run_in_executor(
+                    None, lambda: self._ydl.prepare_filename(self._ydl.extract_info(track_name)))
             except Exception as ex:
                 logging.getLogger('discord').error(ex)
                 return ''
@@ -129,10 +130,8 @@ class TrackRecycler:
 
 # A class that manages the queued tracks, including enqueueing and playing
 class TrackQueue:
-    def __init__(self, loop, ydl, recycler):
-        self.loop = loop
-        self.ydl = ydl
-        self.recycler = recycler
+    def __init__(self, recycler):
+        self._recycler = recycler
         self._clearing_queue = asyncio.Event()
 
         self._enqueue_lock = asyncio.Lock()
@@ -152,21 +151,16 @@ class TrackQueue:
                 if self._clearing_queue.is_set():
                     break
 
-                track_handle = await self.loop.create_task(self.recycler.get_track_handle(track))
+                track_handle = await self._recycler.get_track_handle(track)
                 if track_handle != '':
                     await self._put_track(track_handle)
 
     # Puts the track with the given handle on the track queue
     async def _put_track(self, track_handle):
-        if not self._clearing_queue.is_set():
-            async with self._track_lock:
-                self._track_queue.append(track_handle)
-                async with self._track_available:
-                    self._track_available.notify()
-
-        # Discards the track if we're clearing the queue
-        else:
-            await self.recycler.decrement(track_handle)
+        async with self._track_lock:
+            self._track_queue.append(track_handle)
+            async with self._track_available:
+                self._track_available.notify()
 
     # Blocks until the track queue contains a track
     async def wait(self):
@@ -189,11 +183,12 @@ class TrackQueue:
             else:
                 track_handle = self._track_queue.popleft()
 
+        loop = asyncio.get_event_loop()
         voice_client.play(discord.FFmpegPCMAudio(track_handle),
-                          after=lambda _: self.loop.call_soon_threadsafe(self._track_finished.set))
+                          after=lambda _: loop.call_soon_threadsafe(self._track_finished.set))
         await self._track_finished.wait()
         self._track_finished.clear()
-        await self.recycler.decrement(track_handle)
+        await self._recycler.decrement(track_handle)
 
     # Returns the list of tracks currently in the queue, optionally up to a specified maximum length
     async def get_tracklist(self, max_tracks=-1):
@@ -228,7 +223,7 @@ class TrackQueue:
             try:
                 while len(self._track_queue) > 0:
                     track_handle = self._track_queue.popleft()
-                    await self.recycler.decrement(track_handle)
+                    await self._recycler.decrement(track_handle)
 
             finally:
                 self._clearing_queue.clear()
@@ -238,14 +233,13 @@ class TrackQueue:
 
 # A class that manages player activities for each discord guild
 class Player:
-    def __init__(self, loop, ydl, recycler, guild_id):
-        self.loop = loop
+    def __init__(self, ydl, recycler, guild_id):
         self.ydl = ydl
         self.guild_id = guild_id
         self.status_message = None
         self._message_lock = asyncio.Lock()
         self.voice_client = None
-        self.queue = TrackQueue(loop, ydl, recycler)
+        self.queue = TrackQueue(recycler)
 
     # Deletes the old player status message before sending the new one
     async def _replace_status_message(self, user_message, string):
@@ -351,7 +345,6 @@ class Player:
 
             try:
                 # Play the track
-                await self.queue.wait()
                 track_handle = await self.queue.front()
                 await self._replace_status_message(user_message,
                                                    f'**Now playing *{strip_extension(track_handle)}*...**')
@@ -369,6 +362,7 @@ class Player:
         if await self._sender_in_voice(user_message, send_warning=True):
             url = user_message.content[6:] if len(user_message.content) > 6 else ''
             if is_valid_url(url) or user_message.attachments:
+                loop = asyncio.get_event_loop()
                 playlist = False
                 # Enqueues attachments
                 if user_message.attachments:
@@ -388,7 +382,7 @@ class Player:
                 else:
                     await self._replace_status_message(user_message, '**Collecting info...**')
                     try:
-                        info = await self.loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
+                        info = await loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
                     except Exception as e:
                         await user_message.channel.send('**Error getting video(s).**')
                         logging.getLogger('discord').error(e)
@@ -411,7 +405,8 @@ class Player:
                     if not playlist:
                         await self._replace_status_message(user_message, '**Enqueueing new track...**')
 
-                await self.queue.enqueue(track_list)
+                _ = loop.create_task(self.queue.enqueue(track_list))
+                await self.queue.wait()
 
                 # Starts the player if it hasn't been already
                 if self.voice_client is None:
@@ -443,7 +438,7 @@ class YoutubeBot(discord.Client):
         self.players = {}  # Dictionary of players for each discord guild
         self.ydl = YoutubeDL({'quiet': True, 'extract_flat': 'in_playlist'})
         self.ydl.add_default_info_extractors()
-        self.recycler = TrackRecycler(self.loop, self.ydl)
+        self.recycler = TrackRecycler(self.ydl)
 
     # Discord client startup tasks
     async def on_ready(self):
@@ -451,7 +446,7 @@ class YoutubeBot(discord.Client):
         print('Severs:')
         for guild in self.guilds:
             print(f'{guild.name} (id: {guild.id})')
-            self.players[guild.id] = Player(self.loop, self.ydl, self.recycler, guild.id)
+            self.players[guild.id] = Player(self.ydl, self.recycler, guild.id)
 
     # Background task for custom status
     @tasks.loop(minutes=60)
@@ -466,7 +461,7 @@ class YoutubeBot(discord.Client):
 
     # Adding a new player when we join a new guild
     async def on_guild_join(self, guild):
-        self.players[guild.id] = Player(self.loop, self.ydl, self.recycler, guild.id)
+        self.players[guild.id] = Player(self.ydl, self.recycler, guild.id)
 
     # Bot message commands
     async def on_message(self, message):
