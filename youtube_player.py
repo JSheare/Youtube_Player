@@ -93,8 +93,8 @@ class TrackRecycler:
 
             try:
                 loop = asyncio.get_event_loop()
-                track_handle = await loop.run_in_executor(
-                    None, lambda: self._ydl.prepare_filename(self._ydl.extract_info(track_name)))
+                track_handle = self._ydl.prepare_filename(
+                    await loop.run_in_executor(None, self._ydl.extract_info, track_name))
             except Exception as ex:
                 logging.getLogger('discord').error(ex)
                 return ''
@@ -191,9 +191,9 @@ class TrackQueue:
         await self._recycler.decrement(track_handle)
 
     # Returns the list of tracks currently in the queue, optionally up to a specified maximum length
-    async def get_tracklist(self, max_tracks=-1):
+    async def get_tracklist(self, max_tracks=0):
         tracks = []
-        if max_tracks == -1:
+        if max_tracks <= 0:
             max_tracks = float('inf')
 
         async with self._track_lock:
@@ -217,6 +217,7 @@ class TrackQueue:
     # Clears the queue, including any currently-enqueued downloads
     async def clear(self):
         if not self._clearing_queue.is_set():
+            # The ordering of these is important
             self._clearing_queue.set()
             await self._enqueue_lock.acquire()
             await self._track_lock.acquire()
@@ -226,6 +227,7 @@ class TrackQueue:
                     await self._recycler.decrement(track_handle)
 
             finally:
+                # The ordering of these is also important
                 self._clearing_queue.clear()
                 self._track_lock.release()
                 self._enqueue_lock.release()
@@ -382,7 +384,7 @@ class Player:
                 else:
                     await self._replace_status_message(user_message, '**Collecting info...**')
                     try:
-                        info = await loop.run_in_executor(None, lambda: self.ydl.extract_info(url, download=False))
+                        info = await loop.run_in_executor(None, self.ydl.extract_info, url, False)
                     except Exception as e:
                         await user_message.channel.send('**Error getting video(s).**')
                         logging.getLogger('discord').error(e)
