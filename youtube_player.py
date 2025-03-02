@@ -160,13 +160,13 @@ class TrackQueue:
         async with self._track_lock:
             self._track_queue.append(track_handle)
             async with self._track_available:
-                self._track_available.notify()
+                self._track_available.notify_all()
 
     # Blocks until the track queue contains a track
     async def wait(self):
         if len(self._track_queue) == 0:
             async with self._track_available:
-                await self._track_available.wait()
+                await self._track_available.wait_for(lambda: len(self._track_queue) > 0)
 
         return True
 
@@ -238,21 +238,22 @@ class Player:
     def __init__(self, ydl, recycler, guild_id):
         self.ydl = ydl
         self.guild_id = guild_id
-        self.status_message = None
+        self._status_message = None
         self._message_lock = asyncio.Lock()
-        self.voice_client = None
-        self.queue = TrackQueue(recycler)
+        self._voice_client = None
+        self._player_looping = asyncio.Lock()
+        self._queue = TrackQueue(recycler)
 
     # Deletes the old player status message before sending the new one
     async def _replace_status_message(self, user_message, string):
         async with self._message_lock:
-            if self.status_message is not None:
+            if self._status_message is not None:
                 try:
-                    await self.status_message.delete()
+                    await self._status_message.delete()
                 except discord.errors.NotFound:
                     pass
 
-            self.status_message = await user_message.channel.send(string)
+            self._status_message = await user_message.channel.send(string)
 
     # Checks to see if the message sender is in a voice channel, and optionally sends a warning if they aren't
     @staticmethod
@@ -268,19 +269,19 @@ class Player:
     # Clears the queue
     async def clear(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if not self.queue.empty():
+            if not self._queue.empty():
                 await user_message.channel.send('**Emptying queue...**')
-                await self.queue.clear()
+                await self._queue.clear()
             else:
                 await user_message.channel.send('**Queue already empty.**')
 
     # Displays the current queue
     async def display_queue(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if not self.queue.empty():
+            if not self._queue.empty():
                 max_tracks_displayed = 10
-                tracks = await self.queue.get_tracklist(max_tracks=max_tracks_displayed)
-                original_size = self.queue.size()
+                tracks = await self._queue.get_tracklist(max_tracks=max_tracks_displayed)
+                original_size = self._queue.size()
                 queue_message = '**__Currently in queue:__\n'
                 for track in tracks:
                     queue_message += f'*{strip_extension(track)}*\n'
@@ -298,66 +299,69 @@ class Player:
     # Pauses playback of the current track
     async def pause(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if self.voice_client is not None and self.voice_client.is_playing():
+            if self._voice_client is not None and self._voice_client.is_playing():
                 await user_message.channel.send('**Pausing playback...**')
-                self.voice_client.pause()
+                self._voice_client.pause()
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Resumes playback of the current track
     async def resume(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if self.voice_client is not None and self.voice_client.is_paused():
+            if self._voice_client is not None and self._voice_client.is_paused():
                 await user_message.channel.send('**Resuming playback...**')
-                self.voice_client.resume()
+                self._voice_client.resume()
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Skips playback of the current track
     async def skip(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if self.voice_client is not None and (
-                    self.voice_client.is_playing() or self.voice_client.is_paused()):
+            if self._voice_client is not None and (
+                    self._voice_client.is_playing() or self._voice_client.is_paused()):
                 await user_message.channel.send('**Skipping...**')
-                self.voice_client.stop()
+                self._voice_client.stop()
 
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Leaves the current voice channel
     async def leave(self, user_message):
-        if self.voice_client is not None:
-            await self.queue.clear()
-            await self.voice_client.disconnect()
-            self.voice_client = None
+        if self._voice_client is not None:
+            await self._queue.clear()
+            await self._voice_client.disconnect()
+            self._voice_client = None
         else:
             await user_message.channel.send('**Not currently connected to a voice channel.**')
 
     # Loops through the queue and plays everything inside
     async def _player_loop(self, user_message):
-        self.voice_client = await user_message.author.voice.channel.connect()
-        while True:
-            # Wait for the next track. If we don't get anything new within 5 minutes, disconnect from voice
-            try:
-                async with (timeout(300)):
-                    await self.queue.wait()
+        async with self._player_looping:
+            while True:
+                # Wait for the next track. If we don't get anything new within 5 minutes, disconnect from voice
+                try:
+                    async with (timeout(300)):
+                        await self._queue.wait()
 
-            except asyncio.TimeoutError:
-                break
+                except asyncio.TimeoutError:
+                    break
 
-            try:
-                # Play the track
-                track_handle = await self.queue.front()
-                await self._replace_status_message(user_message,
-                                                   f'**Now playing *{strip_extension(track_handle)}*...**')
-                await self.queue.play(self.voice_client)
-            except Exception as ex:
-                logging.getLogger('discord').error(ex)
+                try:
+                    # Play the track
+                    if self._voice_client is None:
+                        self._voice_client = await user_message.author.voice.channel.connect()
 
-        # Leaves voice
-        if self.voice_client is not None:
-            await self.voice_client.disconnect()
-            self.voice_client = None
+                    track_handle = await self._queue.front()
+                    await self._replace_status_message(user_message,
+                                                       f'**Now playing *{strip_extension(track_handle)}*...**')
+                    await self._queue.play(self._voice_client)
+                except Exception as ex:
+                    logging.getLogger('discord').error(ex)
+
+            # Leaves voice
+            if self._voice_client is not None:
+                await self._voice_client.disconnect()
+                self._voice_client = None
 
     # Enqueues and plays videos/attachments given in the message
     async def play(self, user_message):
@@ -398,20 +402,19 @@ class Player:
                                 user_message, f'**Enqueueing {info["playlist_count"]} videos...**')
                             track_list = [s['url'] for s in info['entries']]
                         else:
-                            await self.queue.enqueue([url.split('&')[0]])
+                            await self._queue.enqueue([url.split('&')[0]])
                             track_list = [url.split('&')[0]]
                     else:
                         track_list = [info['webpage_url']]
 
-                if self.voice_client is not None:
-                    if not playlist:
-                        await self._replace_status_message(user_message, '**Enqueueing new track...**')
+                if self._player_looping.locked() and not playlist:
+                    await self._replace_status_message(user_message, '**Enqueueing new track...**')
 
-                _ = loop.create_task(self.queue.enqueue(track_list))
-                await self.queue.wait()
+                _ = loop.create_task(self._queue.enqueue(track_list))
+                await self._queue.wait()
 
                 # Starts the player if it hasn't been already
-                if self.voice_client is None:
+                if not self._player_looping.locked():
                     await self._player_loop(user_message)
 
             else:
