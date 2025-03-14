@@ -301,7 +301,9 @@ class Player:
         if await self._sender_in_voice(user_message, send_warning=True):
             if self._voice_client is not None and self._voice_client.is_playing():
                 await user_message.channel.send('**Pausing playback...**')
-                self._voice_client.pause()
+                if self._voice_client is not None and self._voice_client.is_playing():
+                    self._voice_client.pause()
+
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
@@ -310,7 +312,9 @@ class Player:
         if await self._sender_in_voice(user_message, send_warning=True):
             if self._voice_client is not None and self._voice_client.is_paused():
                 await user_message.channel.send('**Resuming playback...**')
-                self._voice_client.resume()
+                if self._voice_client is not None and self._voice_client.is_paused():
+                    self._voice_client.stop()
+
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
@@ -320,7 +324,9 @@ class Player:
             if self._voice_client is not None and (
                     self._voice_client.is_playing() or self._voice_client.is_paused()):
                 await user_message.channel.send('**Skipping...**')
-                self._voice_client.stop()
+                if self._voice_client is not None and (
+                        self._voice_client.is_playing() or self._voice_client.is_paused()):
+                    self._voice_client.stop()
 
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
@@ -329,8 +335,11 @@ class Player:
     async def leave(self, user_message):
         if self._voice_client is not None:
             await self._queue.clear()
-            await self._voice_client.disconnect()
-            self._voice_client = None
+            if self._voice_client is not None:
+                await self._voice_client.disconnect()
+                if self._voice_client is not None:
+                    self._voice_client = None
+
         else:
             await user_message.channel.send('**Not currently connected to a voice channel.**')
 
@@ -361,7 +370,8 @@ class Player:
             # Leaves voice
             if self._voice_client is not None:
                 await self._voice_client.disconnect()
-                self._voice_client = None
+                if self._voice_client is not None:
+                    self._voice_client = None
 
     # Enqueues and plays videos/attachments given in the message
     async def play(self, user_message):
