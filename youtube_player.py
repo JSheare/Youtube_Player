@@ -128,6 +128,80 @@ class TrackRecycler:
                 os.remove(track_handle)
 
 
+# A class that provides access to the discord voice client
+class Voice:
+    def __init__(self):
+        self._client = None
+        self._lock = asyncio.Lock()
+        self._busy = asyncio.Lock()
+        self._track_finished = asyncio.Event()
+
+    # Returns True if the voice client is already connected
+    def is_connected(self):
+        return self._client is not None
+
+    # Connects to the given voice channel
+    async def connect(self, channel):
+        async with self._lock:
+            if self._client is not None:
+                await self._client.disconnect()
+
+            self._client = await channel.connect()
+
+    # Disconnects from the current voice channel
+    async def disconnect(self):
+        async with self._lock:
+            if self._client is not None:
+                await self._client.disconnect()
+                self._client = None
+
+    # Plays the track with the given handle in the current voice channel
+    async def play(self, track_handle):
+        async with self._busy:
+            async with self._lock:
+                if self._client is not None:
+                    loop = asyncio.get_event_loop()
+                    self._client.play(discord.FFmpegPCMAudio(track_handle),
+                                      after=lambda _: loop.call_soon_threadsafe(self._track_finished.set))
+                else:
+                    raise RuntimeError('voice client is not connected')
+
+            await self._track_finished.wait()
+            self._track_finished.clear()
+
+    # Returns True if the voice client is already playing a track
+    def is_playing(self):
+        if self._client is not None:
+            return self._client.is_playing()
+        else:
+            raise RuntimeError('voice client is not connected')
+
+    # Returns True if the voice client is paused
+    def is_paused(self):
+        if self._client is not None:
+            return self._client.is_paused()
+        else:
+            raise RuntimeError('voice client is not connected')
+
+    # Pauses playback if something is playing
+    async def pause(self):
+        async with self._lock:
+            if self._client is not None and self._client.is_playing():
+                self._client.pause()
+
+    # Resumes playback if it's paused
+    async def resume(self):
+        async with self._lock:
+            if self._client is not None and self._client.is_paused():
+                self._client.resume()
+
+    # Stops playback if something is playing
+    async def stop(self):
+        async with self._lock:
+            if self._client is not None and (self._client.is_playing() or self._client.is_paused()):
+                self._client.stop()
+
+
 # A class that manages the queued tracks, including enqueueing and playing
 class TrackQueue:
     def __init__(self, recycler):
@@ -139,7 +213,6 @@ class TrackQueue:
         self._track_queue = deque()
         self._track_available = asyncio.Condition()
         self._track_lock = asyncio.Lock()
-        self._track_finished = asyncio.Event()
 
     # Enqueues the tracks in the given list
     async def enqueue(self, track_list):
@@ -171,23 +244,21 @@ class TrackQueue:
         return True
 
     # Returns the handle of the track at the front of the queue without popping it
-    async def front(self):
-        async with self._track_lock:
+    def front(self):
+        if len(self._track_queue) > 0:
             return self._track_queue[0]
+        else:
+            raise IndexError('cannot get the front of an empty queue')
 
     # Plays the track that's currently at the front of the queue in the given voice channel
-    async def play(self, voice_client):
+    async def play(self, voice):
         async with self._track_lock:
             if len(self._track_queue) == 0:
                 return
             else:
                 track_handle = self._track_queue.popleft()
 
-        loop = asyncio.get_event_loop()
-        voice_client.play(discord.FFmpegPCMAudio(track_handle),
-                          after=lambda _: loop.call_soon_threadsafe(self._track_finished.set))
-        await self._track_finished.wait()
-        self._track_finished.clear()
+        await voice.play(track_handle)
         await self._recycler.decrement(track_handle)
 
     # Returns the list of tracks currently in the queue, optionally up to a specified maximum length
@@ -240,7 +311,7 @@ class Player:
         self.guild_id = guild_id
         self._status_message = None
         self._message_lock = asyncio.Lock()
-        self._voice_client = None
+        self._voice = Voice()
         self._player_looping = asyncio.Lock()
         self._queue = TrackQueue(recycler)
 
@@ -299,47 +370,36 @@ class Player:
     # Pauses playback of the current track
     async def pause(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if self._voice_client is not None and self._voice_client.is_playing():
+            if self._voice.is_connected() and self._voice.is_playing():
                 await user_message.channel.send('**Pausing playback...**')
-                if self._voice_client is not None and self._voice_client.is_playing():
-                    self._voice_client.pause()
-
+                await self._voice.pause()
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Resumes playback of the current track
     async def resume(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if self._voice_client is not None and self._voice_client.is_paused():
+            if self._voice.is_connected() and self._voice.is_paused():
                 await user_message.channel.send('**Resuming playback...**')
-                if self._voice_client is not None and self._voice_client.is_paused():
-                    self._voice_client.stop()
-
+                await self._voice.resume()
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Skips playback of the current track
     async def skip(self, user_message):
         if await self._sender_in_voice(user_message, send_warning=True):
-            if self._voice_client is not None and (
-                    self._voice_client.is_playing() or self._voice_client.is_paused()):
+            if self._voice.is_connected() and (
+                    self._voice.is_playing() or self._voice.is_paused()):
                 await user_message.channel.send('**Skipping...**')
-                if self._voice_client is not None and (
-                        self._voice_client.is_playing() or self._voice_client.is_paused()):
-                    self._voice_client.stop()
-
+                await self._voice.stop()
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Leaves the current voice channel
     async def leave(self, user_message):
-        if self._voice_client is not None:
+        if self._voice.is_connected():
             await self._queue.clear()
-            if self._voice_client is not None:
-                await self._voice_client.disconnect()
-                if self._voice_client is not None:
-                    self._voice_client = None
-
+            await self._voice.disconnect()
         else:
             await user_message.channel.send('**Not currently connected to a voice channel.**')
 
@@ -347,7 +407,7 @@ class Player:
     async def _player_loop(self, user_message):
         async with self._player_looping:
             while True:
-                # Wait for the next track. If we don't get anything new within 5 minutes, disconnect from voice
+                # Waits for the next track. If we don't get anything new within 5 minutes, disconnect from voice
                 try:
                     async with (timeout(300)):
                         await self._queue.wait()
@@ -356,22 +416,21 @@ class Player:
                     break
 
                 try:
-                    # Play the track
-                    if self._voice_client is None:
-                        self._voice_client = await user_message.author.voice.channel.connect()
+                    # Plays the track
+                    if not self._voice.is_connected():
+                        await self._voice.connect(user_message.author.voice.channel)
 
-                    track_handle = await self._queue.front()
-                    await self._replace_status_message(user_message,
-                                                       f'**Now playing *{strip_extension(track_handle)}*...**')
-                    await self._queue.play(self._voice_client)
+                    if not self._queue.empty():
+                        track_handle = self._queue.front()
+                        await self._replace_status_message(user_message,
+                                                           f'**Now playing *{strip_extension(track_handle)}*...**')
+                        await self._queue.play(self._voice)
+
                 except Exception as ex:
                     logging.getLogger('discord').error(ex)
 
             # Leaves voice
-            if self._voice_client is not None:
-                await self._voice_client.disconnect()
-                if self._voice_client is not None:
-                    self._voice_client = None
+            await self._voice.disconnect()
 
     # Enqueues and plays videos/attachments given in the message
     async def play(self, user_message):
@@ -451,7 +510,8 @@ class YoutubeBot(discord.Client):
         load_dotenv()  # Loads the .env file where the tokens are stored
         self.discord_token = os.getenv('DISCORD_TOKEN')
         self.players = {}  # Dictionary of players for each discord guild
-        self.ydl = YoutubeDL({'quiet': True, 'extract_flat': 'in_playlist'})
+        self.ydl = YoutubeDL({'quiet': True, 'extract_flat': 'in_playlist', 'extract_audio': True,
+                              'format': 'bestaudio', 'outtmpl': '%(title)s.mp3'})
         self.ydl.add_default_info_extractors()
         self.recycler = TrackRecycler(self.ydl)
 
