@@ -2,6 +2,7 @@ import asyncio
 import discord
 import logging
 import os
+import traceback
 from async_timeout import timeout
 from collections import deque
 from discord.ext import tasks
@@ -79,7 +80,7 @@ class TrackRecycler:
             try:
                 await track.save(track_handle)
             except Exception as ex:
-                logging.getLogger('discord').error(ex)
+                logging.getLogger('discord').error(f'{ex}\n{traceback.format_exc()}')
                 return ''
 
         # For Youtube video url
@@ -96,7 +97,7 @@ class TrackRecycler:
                 track_handle = self._ydl.prepare_filename(
                     await loop.run_in_executor(None, self._ydl.extract_info, track_name))
             except Exception as ex:
-                logging.getLogger('discord').error(ex)
+                logging.getLogger('discord').error(f'{ex}\n{traceback.format_exc()}')
                 return ''
 
         async with self._lock:
@@ -258,8 +259,10 @@ class TrackQueue:
             else:
                 track_handle = self._track_queue.popleft()
 
-        await voice.play(track_handle)
-        await self._recycler.decrement(track_handle)
+        try:
+            await voice.play(track_handle)
+        finally:
+            await self._recycler.decrement(track_handle)
 
     # Returns the list of tracks currently in the queue, optionally up to a specified maximum length
     async def get_tracklist(self, max_tracks=0):
@@ -426,8 +429,14 @@ class Player:
                                                            f'**Now playing *{strip_extension(track_handle)}*...**')
                         await self._queue.play(self._voice)
 
+                except discord.errors.ClientException:
+                    await self._replace_status_message(user_message,
+                                                       f'**Could not play track(s) due to voice connection error.**')
+                    await self._queue.clear()
+                    break
+
                 except Exception as ex:
-                    logging.getLogger('discord').error(ex)
+                    logging.getLogger('discord').error(f'{ex}\n{traceback.format_exc()}')
 
             # Leaves voice
             await self._voice.disconnect()
@@ -458,9 +467,9 @@ class Player:
                     await self._replace_status_message(user_message, '**Collecting info...**')
                     try:
                         info = await loop.run_in_executor(None, self.ydl.extract_info, url, False)
-                    except Exception as e:
+                    except Exception as ex:
                         await user_message.channel.send('**Error getting video(s).**')
-                        logging.getLogger('discord').error(e)
+                        logging.getLogger('discord').error(f'{ex}\n{traceback.format_exc()}')
                         return
 
                     # Enqueues a playlist
