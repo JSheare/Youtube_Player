@@ -2,6 +2,7 @@ import asyncio
 import discord
 import logging
 import os
+import pathlib
 import traceback
 from async_timeout import timeout
 from collections import deque
@@ -63,6 +64,7 @@ class TrackRecycler:
         self._tracks = {}  # Maps track names to handles
         self._handles = {}  # Maps handles to track names
         self._references = {}  # Maps handles to references
+        self._dead_tracks = []  # Used by cleanup task to keep track of tracks with no references
         self._lock = asyncio.Lock()
 
     # Returns the track handle for the specified track and increments the track's counter
@@ -78,7 +80,7 @@ class TrackRecycler:
 
             track_handle = track.filename
             try:
-                await track.save(track_handle)
+                await track.save(pathlib.Path(track_handle))
             except Exception as ex:
                 logging.getLogger('discord').error(f'{ex}\n{traceback.format_exc()}')
                 return ''
@@ -116,17 +118,18 @@ class TrackRecycler:
     @tasks.loop(seconds=5)
     async def cleanup(self):
         async with self._lock:
-            dead_tracks = []
             for track_handle in self._references:
                 if self._references[track_handle] == 0:
-                    dead_tracks.append(track_handle)
+                    self._dead_tracks.append(track_handle)
 
-            for track_handle in dead_tracks:
+            for track_handle in self._dead_tracks:
                 track_name = self._handles[track_handle]
                 del self._tracks[track_name]
                 del self._handles[track_handle]
                 del self._references[track_handle]
                 os.remove(track_handle)
+
+            self._dead_tracks.clear()
 
 
 # A class that provides access to the discord voice client
@@ -139,28 +142,38 @@ class Voice:
 
     # Returns True if the voice client is already connected
     def is_connected(self):
-        return self._client is not None
+        if self._client is not None:
+            return self._client.is_connected()
+
+        return False
 
     # Connects to the given voice channel
     async def connect(self, channel):
         async with self._lock:
-            if self._client is not None:
-                await self._client.disconnect()
+            if self.is_connected():
+                try:
+                    await self._client.disconnect()
+                except discord.errors.ClientException:
+                    pass
 
             self._client = await channel.connect()
 
     # Disconnects from the current voice channel
     async def disconnect(self):
         async with self._lock:
-            if self._client is not None:
-                await self._client.disconnect()
-                self._client = None
+            if self.is_connected():
+                try:
+                    await self._client.disconnect()
+                except discord.errors.ClientException:
+                    pass
+
+            self._client = None
 
     # Plays the track with the given handle in the current voice channel
     async def play(self, track_handle):
         async with self._busy:
             async with self._lock:
-                if self._client is not None:
+                if self.is_connected():
                     loop = asyncio.get_event_loop()
                     self._client.play(discord.FFmpegPCMAudio(track_handle),
                                       after=lambda _: loop.call_soon_threadsafe(self._track_finished.set))
@@ -172,14 +185,14 @@ class Voice:
 
     # Returns True if the voice client is already playing a track
     def is_playing(self):
-        if self._client is not None:
+        if self.is_connected():
             return self._client.is_playing()
         else:
             raise RuntimeError('voice client is not connected')
 
     # Returns True if the voice client is paused
     def is_paused(self):
-        if self._client is not None:
+        if self.is_connected():
             return self._client.is_paused()
         else:
             raise RuntimeError('voice client is not connected')
@@ -187,19 +200,19 @@ class Voice:
     # Pauses playback if something is playing
     async def pause(self):
         async with self._lock:
-            if self._client is not None and self._client.is_playing():
+            if self.is_connected() and self._client.is_playing():
                 self._client.pause()
 
     # Resumes playback if it's paused
     async def resume(self):
         async with self._lock:
-            if self._client is not None and self._client.is_paused():
+            if self.is_connected() and self._client.is_paused():
                 self._client.resume()
 
     # Stops playback if something is playing
     async def stop(self):
         async with self._lock:
-            if self._client is not None and (self._client.is_playing() or self._client.is_paused()):
+            if self.is_connected() and (self._client.is_playing() or self._client.is_paused()):
                 self._client.stop()
 
 
@@ -215,19 +228,23 @@ class TrackQueue:
         self._track_available = asyncio.Condition()
         self._track_lock = asyncio.Lock()
 
-    # Enqueues the tracks in the given list
+    # Enqueues the tracks in the given list. Returns the number of tracks successfully enqueued
     async def enqueue(self, track_list):
         async with self._enqueue_lock:
+            num_enqueued = 0
             if self._clearing_queue.is_set():
-                return
+                return len(track_list)
 
             for track in track_list:
                 if self._clearing_queue.is_set():
-                    break
+                    return len(track_list)
 
                 track_handle = await self._recycler.get_track_handle(track)
                 if track_handle != '':
                     await self._put_track(track_handle)
+                    num_enqueued += 1
+
+            return num_enqueued
 
     # Puts the track with the given handle on the track queue
     async def _put_track(self, track_handle):
@@ -429,9 +446,8 @@ class Player:
                                                            f'**Now playing *{strip_extension(track_handle)}*...**')
                         await self._queue.play(self._voice)
 
-                except discord.errors.ClientException:
-                    await self._replace_status_message(user_message,
-                                                       f'**Could not play track(s) due to voice connection error.**')
+                except (discord.errors.ClientException, RuntimeError):
+                    await user_message.channel.send(f'**Could not play track(s) due to voice connection error.**')
                     await self._queue.clear()
                     break
 
@@ -488,7 +504,10 @@ class Player:
                 if self._player_looping.locked() and not playlist:
                     await self._replace_status_message(user_message, '**Enqueueing new track...**')
 
-                _ = loop.create_task(self._queue.enqueue(track_list))
+                diff = len(track_list) - await self._queue.enqueue(track_list)
+                if diff > 0:
+                    await user_message.channel.send(f'**Failed to enqueue {diff} track(s).**')
+
                 await self._queue.wait()
 
                 # Starts the player if it hasn't been already
