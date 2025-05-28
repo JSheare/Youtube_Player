@@ -231,20 +231,16 @@ class TrackQueue:
     # Enqueues the tracks in the given list. Returns the number of tracks successfully enqueued
     async def enqueue(self, track_list):
         async with self._enqueue_lock:
-            num_enqueued = 0
             if self._clearing_queue.is_set():
-                return len(track_list)
+                return
 
             for track in track_list:
                 if self._clearing_queue.is_set():
-                    return len(track_list)
+                    break
 
                 track_handle = await self._recycler.get_track_handle(track)
                 if track_handle != '':
                     await self._put_track(track_handle)
-                    num_enqueued += 1
-
-            return num_enqueued
 
     # Puts the track with the given handle on the track queue
     async def _put_track(self, track_handle):
@@ -504,10 +500,7 @@ class Player:
                 if self._player_looping.locked() and not playlist:
                     await self._replace_status_message(user_message, '**Enqueueing new track...**')
 
-                diff = len(track_list) - await self._queue.enqueue(track_list)
-                if diff > 0:
-                    await user_message.channel.send(f'**Failed to enqueue {diff} track(s).**')
-
+                _ = loop.create_task(self._queue.enqueue(track_list))
                 await self._queue.wait()
 
                 # Starts the player if it hasn't been already
