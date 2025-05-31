@@ -227,6 +227,7 @@ class TrackQueue:
         self._track_queue = deque()
         self._track_available = asyncio.Condition()
         self._track_lock = asyncio.Lock()
+        self._looping_track = asyncio.Event()
 
     # Enqueues the tracks in the given list. Returns the number of tracks successfully enqueued
     async def enqueue(self, track_list):
@@ -275,7 +276,23 @@ class TrackQueue:
         try:
             await voice.play(track_handle)
         finally:
-            await self._recycler.decrement(track_handle)
+            if self._looping_track.is_set():
+                async with self._track_lock:
+                    self._track_queue.appendleft(track_handle)
+
+            else:
+                await self._recycler.decrement(track_handle)
+
+    # Returns True if track looping is enabled, and False otherwise
+    def is_looping_track(self):
+        return self._looping_track.is_set()
+
+    # Toggles track looping
+    def toggle_track_looping(self):
+        if self._looping_track.is_set():
+            self._looping_track.clear()
+        else:
+            self._looping_track.set()
 
     # Returns the list of tracks currently in the queue, optionally up to a specified maximum length
     async def get_tracklist(self, max_tracks=0):
@@ -407,13 +424,34 @@ class Player:
             if self._voice.is_connected() and (
                     self._voice.is_playing() or self._voice.is_paused()):
                 await user_message.channel.send('**Skipping...**')
+                if self._queue.is_looping_track():
+                    self._queue.toggle_track_looping()
+
                 await self._voice.stop()
+            else:
+                await user_message.channel.send('**Nothing playing right now.**')
+
+    # Toggles looping of the current track
+    async def loop(self, user_message):
+        if await self._sender_in_voice(user_message, send_warning=True):
+            if self._voice.is_connected() and (
+                    self._voice.is_playing() or self._voice.is_paused()):
+                if self._queue.is_looping_track():
+                    await user_message.channel.send('**Stopping loop...**')
+                else:
+                    await user_message.channel.send('**Looping...**')
+
+                self._queue.toggle_track_looping()
+
             else:
                 await user_message.channel.send('**Nothing playing right now.**')
 
     # Leaves the current voice channel
     async def leave(self, user_message):
         if self._voice.is_connected():
+            if self._queue.is_looping_track():
+                self._queue.toggle_track_looping()
+
             await self._queue.clear()
             await self._voice.disconnect()
         else:
@@ -423,13 +461,14 @@ class Player:
     async def _player_loop(self, user_message):
         async with self._player_looping:
             while True:
-                # Waits for the next track. If we don't get anything new within 5 minutes, disconnect from voice
-                try:
-                    async with (timeout(300)):
-                        await self._queue.wait()
+                if self._queue.empty():
+                    # Waits for the next track. If we don't get anything new within 5 minutes, disconnect from voice
+                    try:
+                        async with (timeout(300)):
+                            await self._queue.wait()
 
-                except asyncio.TimeoutError:
-                    break
+                    except asyncio.TimeoutError:
+                        break
 
                 try:
                     # Plays the track
@@ -437,9 +476,11 @@ class Player:
                         await self._voice.connect(user_message.author.voice.channel)
 
                     if not self._queue.empty():
-                        track_handle = self._queue.front()
-                        await self._replace_status_message(user_message,
-                                                           f'**Now playing *{strip_extension(track_handle)}*...**')
+                        if not self._queue.is_looping_track():
+                            track_handle = self._queue.front()
+                            await self._replace_status_message(user_message,
+                                                               f'**Now playing *{strip_extension(track_handle)}*...**')
+
                         await self._queue.play(self._voice)
 
                 except (discord.errors.ClientException, RuntimeError):
@@ -519,6 +560,7 @@ class Player:
                         '!pause - pause playback\n'
                         '!resume - resume playback\n'
                         '!skip - skip the current video\n'
+                        '!loop - loop the current track\n'
                         '!queue - display the current contents of the queue\n'
                         '!clear - clear the queue\n'
                         '!leave - leave the current voice channel**')
@@ -573,6 +615,8 @@ class YoutubeBot(discord.Client):
                 await self.players[message.guild.id].resume(message)
             elif message.content == '!skip':
                 await self.players[message.guild.id].skip(message)
+            elif message.content == '!loop':
+                await self.players[message.guild.id].loop(message)
             elif message.content == '!leave':
                 await self.players[message.guild.id].leave(message)
             elif message.content == '!queue':
