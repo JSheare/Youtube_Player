@@ -12,9 +12,11 @@ from yt_dlp import YoutubeDL
 
 
 def is_valid_url(url):
-    return (len(url) >= 23 and url[:23] == 'https://www.youtube.com') or (
-        len(url) >= 16 and url[:16] == 'https://youtu.be') or (
-            len(url) >= 19 and url[:19] == 'https://youtube.com')
+    return (
+            len(url) >= 23 and url[:23] == 'https://www.youtube.com') or (
+            len(url) >= 16 and url[:16] == 'https://youtu.be') or (
+            len(url) >= 19 and url[:19] == 'https://youtube.com') or (
+            len(url) >= 21 and url[:21] == 'https://m.youtube.com')
 
 
 def is_valid_attachment(filename):
@@ -29,18 +31,12 @@ def is_valid_attachment(filename):
         return False
 
     extension = filename[i:]
-    if extension == '.mp3':
-        return True
-    elif extension == '.mp4':
-        return True
-    elif extension == '.wav':
-        return True
-    elif extension == '.webm':
-        return True
-    elif extension == '.mov':
-        return True
-
-    return False
+    return (
+            extension == '.mp3' or
+            extension == '.mp4' or
+            extension == '.wav' or
+            extension == '.webm' or
+            extension == '.mov')
 
 
 def strip_extension(filename):
@@ -549,22 +545,28 @@ class Player:
                     await self._player_loop(user_message)
 
             else:
-                await user_message.channel.send('**Not a valid link/attachment.**')
+                if url != '':
+                    await user_message.channel.send('**Not a valid link/attachment.**')
+
+                if self._queue.size() > 0:
+                    # Starts the player if it got stopped unexpectedly
+                    if not self._player_looping.locked():
+                        await self._player_loop(user_message)
 
     # Sends a help message with all the bot's commands
     @staticmethod
     async def help(user_message):
-        help_message = ('**!help - list all commands\n'
-                        '!play [url] - play specified video(s) in the current voice channel\n'
-                        '!play (with attachment) - play attachment(s) in the current voice channel\n'
-                        '!pause - pause playback\n'
-                        '!resume - resume playback\n'
-                        '!skip - skip the current video\n'
-                        '!loop - loop the current track\n'
-                        '!queue - display the current contents of the queue\n'
-                        '!clear - clear the queue\n'
-                        '!leave - leave the current voice channel**')
-        await user_message.channel.send(help_message)
+        await user_message.channel.send(
+            '**!help - list all commands\n'
+            '!play [url] - play specified video(s) in the current voice channel\n'
+            '!play (with attachment) - play attachment(s) in the current voice channel\n'
+            '!pause - pause playback\n'
+            '!resume - resume playback\n'
+            '!skip - skip the current video\n'
+            '!loop - loop the current track\n'
+            '!queue - display the current contents of the queue\n'
+            '!clear - clear the queue\n'
+            '!leave - leave the current voice channel**')
 
 
 class YoutubeBot(discord.Client):
