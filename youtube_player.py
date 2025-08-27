@@ -603,6 +603,10 @@ class YoutubeBot(discord.Client):
     async def on_guild_join(self, guild):
         self.players[guild.id] = Player(self.ydl, self.recycler, guild.id)
 
+    # Removing player when we are removed from a guild
+    async def on_guild_remove(self, guild):
+        self.players.pop(guild.id)
+
     # Bot message commands
     async def on_message(self, message):
         # Ignores any messages from the bot itself
