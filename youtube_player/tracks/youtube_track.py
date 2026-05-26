@@ -22,7 +22,7 @@ class YoutubeTrack(Track):
 
         self._file_name = file_name
         self.name = strip_extension(self._file_name).replace(f'{params.DOWNLOAD_LOC}/', '')
-        download_manager.increment(self._info, self._file_name)
+        await download_manager.increment(self._info, self._file_name)
         self._prepared = True
 
     def get_audio(self) -> discord.FFmpegPCMAudio:
@@ -31,4 +31,4 @@ class YoutubeTrack(Track):
     async def discard(self) -> None:
         """Decrements the reference count of the track's associated file on object destruction."""
         if self._prepared:
-            download_manager.decrement(self._info)
+            await download_manager.decrement(self._info)

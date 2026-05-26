@@ -120,7 +120,8 @@ class TrackQueue:
             await self._track_lock.acquire()
             try:
                 while len(self._track_queue) > 0:
-                    self._track_queue.popleft()
+                    track = self._track_queue.popleft()
+                    await track.discard()
 
             finally:
                 # The ordering of these is also important

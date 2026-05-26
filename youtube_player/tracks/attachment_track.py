@@ -18,7 +18,7 @@ class AttachmentTrack(Track):
             await self._info.save(pathlib.Path(self._file_name))
 
         self.name = self._file_name.replace(f'{params.DOWNLOAD_LOC}/', '')
-        download_manager.increment(self._file_name, self._file_name)
+        await download_manager.increment(self._file_name, self._file_name)
         self._prepared = True
 
     def get_audio(self) -> discord.FFmpegPCMAudio:
@@ -27,4 +27,4 @@ class AttachmentTrack(Track):
     async def discard(self) -> None:
         """Decrements the reference count of the track's associated file on object destruction."""
         if self._prepared:
-            download_manager.decrement(self._file_name)
+            await download_manager.decrement(self._file_name)
