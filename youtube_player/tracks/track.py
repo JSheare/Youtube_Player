@@ -20,3 +20,8 @@ class Track(ABC):
     def get_audio(self) -> type[discord.AudioSource]:
         """Returns the track as an AudioSource."""
         pass
+
+    @abstractmethod
+    async def discard(self) -> None:
+        """Discard the track and do necessary teardown work."""
+        pass

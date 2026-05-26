@@ -12,11 +12,6 @@ class AttachmentTrack(Track):
         super().__init__(info)
         self._file_name = f'{params.DOWNLOAD_LOC}/{self._info.filename}'
 
-    def __del__(self):
-        """Decrements the reference count of the track's associated file on object destruction."""
-        if self._prepared:
-            download_manager.decrement(self._file_name)
-
     async def prepare(self) -> None:
         file_name = download_manager.get_file_name(self._file_name)
         if file_name == '':
@@ -28,3 +23,8 @@ class AttachmentTrack(Track):
 
     def get_audio(self) -> discord.FFmpegPCMAudio:
         return discord.FFmpegPCMAudio(self._file_name)
+
+    async def discard(self) -> None:
+        """Decrements the reference count of the track's associated file on object destruction."""
+        if self._prepared:
+            download_manager.decrement(self._file_name)

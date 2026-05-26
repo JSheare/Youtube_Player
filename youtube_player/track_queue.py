@@ -51,10 +51,10 @@ class TrackQueue:
             async with self._track_available:
                 await self._track_available.wait_for(lambda: len(self._track_queue) > 0)
 
-    def front(self) -> Track:
+    def front(self) -> str:
         """Returns the name of the track at the front of the queue."""
         if len(self._track_queue) > 0:
-            return self._track_queue[0]
+            return self._track_queue[0].name
         else:
             raise IndexError('cannot get the front of an empty queue')
 
@@ -72,6 +72,9 @@ class TrackQueue:
             if self._looping_track.is_set():
                 async with self._track_lock:
                     self._track_queue.appendleft(track)
+
+            else:
+                await track.discard()
 
     def is_looping_track(self) -> bool:
         """Returns True if track looping is enabled, and False otherwise."""

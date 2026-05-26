@@ -15,11 +15,6 @@ class YoutubeTrack(Track):
         super().__init__(info)
         self._file_name = ''
 
-    def __del__(self):
-        """Decrements the reference count of the track's associated file on object destruction."""
-        if self._prepared:
-            download_manager.decrement(self._info)
-
     async def prepare(self) -> None:
         file_name = download_manager.get_file_name(self._info)
         if file_name == '':
@@ -32,3 +27,8 @@ class YoutubeTrack(Track):
 
     def get_audio(self) -> discord.FFmpegPCMAudio:
         return discord.FFmpegPCMAudio(self._file_name)
+
+    async def discard(self) -> None:
+        """Decrements the reference count of the track's associated file on object destruction."""
+        if self._prepared:
+            download_manager.decrement(self._info)
