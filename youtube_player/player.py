@@ -223,6 +223,7 @@ class Player:
 
                 else:
                     if is_valid_youtube(url):
+                        await self._replace_status_message(user_message, '**Collecting info...**')
                         track_list = await self._handle_youtube(url)
                         list_len = len(track_list)
                         if list_len == 0:

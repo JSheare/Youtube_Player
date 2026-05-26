@@ -2,6 +2,7 @@
 import asyncio
 import discord
 
+import youtube_player.config.parameters as params
 from youtube_player.helpers.downloader import ydl
 from youtube_player.helpers.download_manager import download_manager
 from youtube_player.helpers.helper_funcs import strip_extension
@@ -25,7 +26,7 @@ class YoutubeTrack(Track):
             file_name = ydl.prepare_filename(await asyncio.to_thread(ydl.extract_info, self._info))
 
         self._file_name = file_name
-        self.name = strip_extension(self._file_name)
+        self.name = strip_extension(self._file_name).replace(f'{params.DOWNLOAD_LOC}/', '')
         download_manager.increment(self._info, self._file_name)
         self._prepared = True
 
