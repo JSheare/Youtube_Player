@@ -8,7 +8,8 @@ def is_valid_log_level(value: Any) -> int:
     if not isinstance(value, str):
         raise ValueError('input should be a string corresponding to a log level.')
 
-    level_mappings = logging.getLevelNamesMapping()
+    level_mappings = {'CRITICAL': 50, 'FATAL': 50, 'ERROR': 40, 'WARN': 30, 'WARNING': 30, 'INFO': 20, 'DEBUG': 10,
+                      'NOTSET': 0}
     value = value.upper()
     if value not in level_mappings:
         raise ValueError('input should be a string corresponding to a log level.')
