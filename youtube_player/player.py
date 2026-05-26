@@ -153,7 +153,7 @@ class Player:
 
                     if not self._queue.empty():
                         if not self._queue.is_looping_track():
-                            track= self._queue.front()
+                            track = self._queue.front()
                             await self._replace_status_message(user_message,
                                                                f'**Now playing *{track.name}*...**')
 

@@ -54,7 +54,7 @@ class TrackQueue:
     def front(self) -> Track:
         """Returns the name of the track at the front of the queue."""
         if len(self._track_queue) > 0:
-            return self._track_queue[0].name
+            return self._track_queue[0]
         else:
             raise IndexError('cannot get the front of an empty queue')
 

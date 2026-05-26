@@ -1,5 +1,4 @@
 """A module containing the pydantic model used to validate the bot's config file."""
-import logging
 import pydantic
 from typing import Any, Annotated
 
