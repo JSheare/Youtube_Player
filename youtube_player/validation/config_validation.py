@@ -19,3 +19,5 @@ def is_valid_log_level(value: Any) -> int:
 class BotModel(pydantic.BaseModel):
     log_level: Annotated[int, pydantic.BeforeValidator(is_valid_log_level)]
     discord_token : str
+    privileged_user: pydantic.PositiveInt
+    ip_pass: str
