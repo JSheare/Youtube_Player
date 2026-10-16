@@ -4,7 +4,6 @@ import discord
 import logging
 import socket
 import urllib.request
-from async_timeout import timeout
 from typing import List
 
 from youtube_player.track_queue import TrackQueue
@@ -142,7 +141,7 @@ class Player:
                 if self._queue.empty():
                     # Waits for the next track. If we don't get anything new within 5 minutes, disconnect from voice
                     try:
-                        async with timeout(300):
+                        async with asyncio.timeout(300):
                             await self._queue.wait()
 
                     except asyncio.TimeoutError:
