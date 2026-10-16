@@ -18,7 +18,7 @@ class YoutubeBot(discord.Client):
 
     async def on_ready(self) -> None:
         """Runs Discord client startup tasks."""
-        self._logger.info(f'{self.user} as connected to Discord.')
+        self._logger.info(f'{self.user} has connected to Discord.')
         for guild in self.guilds:
             self._logger.info(f'Adding player for guild {guild.name} (id: {guild.id}).')
             self.players[guild.id] = Player(guild.id)
@@ -68,3 +68,7 @@ class YoutubeBot(discord.Client):
                 await self.players[message.guild.id].clear(message)
             elif message.content == '!help':
                 await self.players[message.guild.id].help(message)
+            elif '!ip' in message.content:
+                if (message.author.id == self._config.privileged_user or
+                        message.content == f'!ip {self._config.ip_pass}'):
+                    await self.players[message.guild.id].ip(message)

@@ -2,6 +2,8 @@
 import asyncio
 import discord
 import logging
+import socket
+import urllib.request
 from async_timeout import timeout
 from typing import List
 
@@ -271,3 +273,11 @@ class Player:
             '!queue - display the current contents of the queue\n'
             '!clear - clear the queue\n'
             '!leave - leave the current voice channel**')
+
+    @staticmethod
+    async def ip(user_message: discord.Message) -> None:
+        """Sends IP request message (administrator use)"""
+        public_ip = (await asyncio.to_thread(urllib.request.urlopen, 'https://v4.ident.me')).read().decode('utf-8')
+        local_ip = socket.gethostbyname_ex(socket.gethostname())
+        await user_message.channel.send(f'**Public IP: {public_ip}**')
+        await user_message.channel.send(f'**Local IP: {local_ip}**')
